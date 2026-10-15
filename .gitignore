@@ -1,0 +1,6 @@
+__pycache__
+*.zip
+.ipynb_checkpoints
+.vscode
+/data
+/pretrained_models
