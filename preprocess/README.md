@@ -1,3 +1,25 @@
+# Installation:
+
+2 environments are required for the data:
+
+- The first to fetch youtube:
+
+```bash
+conda create -n ytdlp python=3.11 -y
+conda activate ytdlp
+python -m pip install -U "yt-dlp[default]"
+conda install -c conda-forge ffmpeg nodejs -y
+python -m pip install pandas tqdm joblib omegaconf
+```
+
+- The second to run the following scripts:
+
+```bash
+conda create -n music2piano python=3.9
+pip install -r requirements.txt
+```
+
+
 # Preprocess Scripts
 
 1. transform wav to midi 

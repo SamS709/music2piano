@@ -12,7 +12,6 @@ from transformers import T5Config, T5ForConditionalGeneration
 
 from midi_tokenizer import MidiTokenizer, extrapolate_beat_times
 from layer.input import LogMelSpectrogram, ConcatEmbeddingToMel
-from preprocess.beat_quantizer import extract_rhythm, interpolate_beat_times
 from utils.dsp import get_stereo
 
 
@@ -251,6 +250,8 @@ class TransformerWrapper(pl.LightningModule):
         ESSENTIA_SAMPLERATE = 44100
 
         if beatsteps is None:
+            from preprocess.beat_quantizer import extract_rhythm, interpolate_beat_times
+
             y, sr = librosa.load(audio_path, sr=ESSENTIA_SAMPLERATE)
             (
                 bpm,
