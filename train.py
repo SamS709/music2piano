@@ -87,12 +87,13 @@ class Pop2PianoDataset(Dataset):
             add_eos=True,
         )
         tokens = tokens[: self.max_target_length]
-
-        return {
+        output = {
             "audio": torch.from_numpy(audio.astype(np.float32)),
             "labels": torch.tensor(tokens, dtype=torch.long),
             "composer": torch.tensor(self.composer_value, dtype=torch.long),
         }
+        # print(output)
+        return output
 
 
 def collate_batch(items):
@@ -107,7 +108,9 @@ def collate_batch(items):
         padding_value=-100,
     )
     composer = torch.stack([item["composer"] for item in items])
-    return {"audio": audio, "labels": labels, "composer": composer}
+    output = {"audio": audio, "labels": labels, "composer": composer}
+    # print(output)
+    return output
 
 
 class TrainableTransformer(TransformerWrapper):

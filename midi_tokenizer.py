@@ -58,9 +58,19 @@ def fast_detokenize(idx, n_special, n_note, n_velocity, time_idx_offset):
 
 class MidiTokenizer:
     def __init__(self, config) -> None:
+        """Create a tokenizer using the vocabulary sizes from ``config``.
+
+        Example:
+            ``tokenizer = MidiTokenizer(config)``
+        """
         self.config = config
 
     def tokenize_note(self, idx, token_type):
+        """Encode a note, velocity, time, or special value as one token.
+
+        Example:
+            ``token = tokenizer.tokenize_note(60, TOKEN_NOTE)``
+        """
         rt = fast_tokenize(
             idx,
             token_type,
@@ -75,7 +85,16 @@ class MidiTokenizer:
 
     def notes_to_tokens(self, notes):
         """
-        notes : (onset idx, offset idx, pitch, velocity)
+        Convert absolute note events into time, velocity, and pitch tokens.
+
+        Args:
+            notes: An array of ``(onset_idx, offset_idx, pitch, velocity)`` rows.
+
+        Returns:
+            A NumPy array containing absolute-time token IDs.
+
+        Example:
+            ``tokens = tokenizer.notes_to_tokens(np.array([[0, 4, 60, 90]]))``
         """
         max_time_idx = notes[:, :2].max()
 
@@ -100,6 +119,11 @@ class MidiTokenizer:
         return np.array(tokens, dtype=int)
 
     def detokenize(self, token, time_idx_offset):
+        """Decode one token into its token type and value.
+
+        Example:
+            ``token_type, value = tokenizer.detokenize(token, time_idx_offset=0)``
+        """
         type, value = fast_detokenize(
             token,
             n_special=self.config.vocab_size.special,
@@ -112,6 +136,11 @@ class MidiTokenizer:
         return [type, value]
 
     def to_string(self, tokens, time_idx_offset=0):
+        """Represent token IDs as readable ``(type, value)`` pairs.
+
+        Example:
+            ``readable = tokenizer.to_string(tokens)``
+        """
         nums = [
             self.detokenize(token, time_idx_offset=time_idx_offset) for token in tokens
         ]
@@ -140,9 +169,19 @@ class MidiTokenizer:
 
     def split_notes(self, notes, beatsteps, time_from, time_to):
         """
-        Assumptions
-        - notes are sorted by onset time
-        - beatsteps are sorted by time
+        Select notes whose onset lies within a beat-time interval.
+
+        Args:
+            notes: Notes sorted by onset index.
+            beatsteps: Beat times sorted in ascending order.
+            time_from: Start time of the interval.
+            time_to: End time of the interval.
+
+        Returns:
+            The selected notes and the corresponding beat and note indices.
+
+        Example:
+            ``segment, indices = tokenizer.split_notes(notes, beatsteps, 4.0, 8.0)``
         """
         start_idx = np.searchsorted(beatsteps, time_from)
         start_note = np.searchsorted(notes[:, 0], start_idx)
@@ -157,7 +196,20 @@ class MidiTokenizer:
         self, notes, offset_idx, add_eos=False, add_composer=False, composer_value=None
     ):
         """
-        notes : (onset idx, offset idx, pitch, velocity)
+        Convert absolute note events into tokens with times relative to an offset.
+
+        Args:
+            notes: An array of ``(onset_idx, offset_idx, pitch, velocity)`` rows.
+            offset_idx: Absolute beat index used as relative time zero.
+            add_eos: Append an end-of-sequence token when true.
+            add_composer: Prefix the sequence with ``composer_value`` when true.
+            composer_value: Token ID to use for the optional composer prefix.
+
+        Returns:
+            A NumPy array containing relative-time token IDs.
+
+        Example:
+            ``tokens = tokenizer.notes_to_relative_tokens(notes, offset_idx=8, add_eos=True)``
         """
 
         def _add_eos(tokens):
@@ -223,8 +275,20 @@ class MidiTokenizer:
         cutoff_time_idx=None,
     ):
         """
-        tokens : (batch, sequence)
-        beatstep : (times, )
+        Decode batched relative tokens and combine them into a MIDI object.
+
+        Args:
+            tokens: A batch of relative token sequences.
+            beatstep: Beat times used to convert indices to seconds.
+            beat_offset_idx: Beat index at which the batch starts.
+            bars_per_batch: Number of four-beat bars represented by each sequence.
+            cutoff_time_idx: Optional absolute index at which notes are clipped.
+
+        Returns:
+            A ``pretty_midi.PrettyMIDI`` object and the decoded note array.
+
+        Example:
+            ``midi, notes = tokenizer.relative_batch_tokens_to_midi(batch, beatstep)``
         """
         beat_offset_idx = 0 if beat_offset_idx is None else beat_offset_idx
         notes = None
@@ -255,6 +319,11 @@ class MidiTokenizer:
         return midi, notes
 
     def relative_tokens_to_notes(self, tokens, start_idx, cutoff_time_idx=None):
+        """Decode relative tokens into absolute note-event rows.
+
+        Example:
+            ``notes = tokenizer.relative_tokens_to_notes(tokens, start_idx=16)``
+        """
         # TODO remove legacy
         # decoding 첫토큰이 편곡자인 경우
         if tokens[0] >= sum(self.config.vocab_size.values()):
@@ -340,6 +409,11 @@ class MidiTokenizer:
             return notes
 
     def notes_to_midi(self, notes, beatstep, offset_sec=None):
+        """Create a piano MIDI object from indexed note events and beat times.
+
+        Example:
+            ``midi = tokenizer.notes_to_midi(notes, beatstep, offset_sec=0.0)``
+        """
         new_pm = pretty_midi.PrettyMIDI(resolution=384, initial_tempo=120.0)
         new_inst = pretty_midi.Instrument(program=0)
         new_notes = []

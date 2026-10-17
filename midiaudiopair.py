@@ -45,6 +45,11 @@ class MidiAudioPair:
     }
 
     def validate_files(self):
+        """Return the expected audio, MIDI, and preprocessing files that are missing.
+
+        Example:
+            ``missing = sample.validate_files()``
+        """
         attrs = [
             "midi",
             "song",
@@ -67,6 +72,11 @@ class MidiAudioPair:
         return invalids
 
     def validate_yaml(self, audio_dir, yaml):
+        """Validate metadata and return the matching ``MidiAudioPair`` error code.
+
+        Example:
+            ``status = sample.validate_yaml(audio_dir, metadata)``
+        """
         if not hasattr(yaml, "song"):
             return MidiAudioPair.NO_SONG
 
@@ -97,6 +107,11 @@ class MidiAudioPair:
         return MidiAudioPair.VALID
 
     def set_song_attrs(self):
+        """Build paths for the song's derived audio, MIDI, and feature files.
+
+        Example:
+            ``sample.set_song_attrs(); print(sample.qmidi)``
+        """
         basename = os.path.join(self.song_dir, f"{self.yaml.song.ytid}")
 
         self.mix = basename + ".mix.flac"
@@ -114,6 +129,11 @@ class MidiAudioPair:
         self.vocals = basename + ".vocals.mp3"
 
     def delete_files_myself(self):
+        """Delete the source metadata and files associated with this pair.
+
+        Example:
+            ``sample.delete_files_myself()``
+        """
         shutil.rmtree(os.path.join(self.audio_dir, self.yaml.piano.ytid))
         os.remove(self.yaml_path)
         os.remove(self.original_midi)
@@ -121,6 +141,16 @@ class MidiAudioPair:
             os.remove(self.original_wav)
 
     def __init__(self, yaml_path, audio_dir=None, auto_remove_no_song=False):
+        """Load metadata, validate its files, and initialize the pair's paths.
+
+        Args:
+            yaml_path: Path to the YAML metadata file.
+            audio_dir: Directory containing audio and MIDI assets.
+            auto_remove_no_song: Remove orphaned metadata when no song is present.
+
+        Example:
+            ``sample = MidiAudioPair("metadata.yaml", audio_dir="audio")``
+        """
         self.yaml_path = yaml_path
 
         self.yaml = OmegaConf.load(yaml_path)
@@ -158,15 +188,30 @@ class MidiAudioPair:
             self.title = f"{self.yaml.piano.title}"
 
     def __repr__(self):
+        """Return a compact status and path summary for this pair.
+
+        Example:
+            ``print(sample)``
+        """
         return f"{MidiAudioPair.ERROR_CODE[self.error_code]}, inv{self.invalids}, {self.yaml_path}, {self.title}"
 
     def generated(self, composer, generated="model_name"):
+        """Return the expected path of a generated MIDI file.
+
+        Example:
+            ``path = sample.generated("transformer")``
+        """
         midi_path = os.path.join(
             self.song_dir, generated, self.yaml.song.ytid + "." + composer + ".mid"
         )
         return midi_path
 
     def result_json(self, generated="model_name"):
+        """Return the expected path of a generated model result JSON file.
+
+        Example:
+            ``path = sample.result_json("transformer")``
+        """
         json_path = os.path.join(
             self.song_dir, generated, self.yaml.song.ytid + ".result.json"
         )

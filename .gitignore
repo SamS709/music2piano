@@ -4,3 +4,5 @@ __pycache__
 .vscode
 /data
 /pretrained_models
+/checkpoints
+/checkpoints_smoke
