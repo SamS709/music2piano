@@ -63,7 +63,7 @@ also a `song`, `tempo`, and evaluation section.
 | `BAD_TITLE` | The piano title matches the excluded title pattern. |
 | `NO_TEMPO` | Tempo information is missing. |
 | `BLACKLIST` | The piano YouTube ID is blacklisted. |
-| `BAD_ACCURACY` | Melody/chroma accuracy is below the minimum threshold. |
+| `BAD_ACCURACY` | Melody chroma accuracy is below the training-data threshold. |
 
 After metadata validation, `validate_files` checks the expected generated
 assets. Missing paths are returned in `sample.invalids`; the object is valid
@@ -102,6 +102,321 @@ generated_midi = sample.generated(
 result_file = sample.result_json(generated="generated")
 ```
 
+## 2. Musical meaning and relationships
+
+These files are different representations of one paired example: a piano
+cover and its corresponding pop song.
+
+```text
+piano-cover audio --> piano transcription --> midi
+
+pop-song audio --> alignment/pitch correction --> song
+                         |
+                         +--> beat tracking --> beattime
+                         |                    beatinterval
+                         |                    beatstep
+                         |
+                         +--> quantized MIDI/audio --> qmidi, qmix, notes
+```
+
+For a song ID such as `EHl_eQhgefw`, the derived files are stored below the
+piano directory:
+
+```text
+data/<piano_id>/EHl_eQhgefw.<suffix>
+```
+
+### `midi`: source or aligned piano MIDI
+
+This is a symbolic score of the piano cover. It stores pitches, note-on and
+note-off times, velocities, and possibly sustain-pedal events; it is not audio.
+
+The original transcription is normally:
+
+```text
+data/<piano_id>.mid
+```
+
+`pop_align.py` reads this MIDI and writes the time-aligned result as
+`data/<piano_id>/<song_id>.mid`. The note pitches are retained; the note times
+are changed to follow the pop-song timeline. If `W` is the estimated
+time-warping function, a piano note `[p_start, p_end]` becomes:
+
+```text
+aligned_start = W(p_start)
+aligned_end   = W(p_end)
+```
+
+This makes the piano performance line up with the pop song. Thus the
+processed MIDI is changed, but the original MIDI remains available at the
+top-level path.
+
+### `song`: pitch-shifted pop-song audio
+
+This is a derived copy of the original pop recording after preprocessing. The
+downloaded source is preserved separately as:
+
+```text
+data/<piano_id>/<song_id>.wav
+```
+
+The derived `song` is pitch-shifted so that the pop audio and the piano MIDI
+use the same musical key. It is not time-stretched: the MIDI time axis is
+warped instead. If the estimated key correction is `s` semitones, a frequency
+`f` is shifted according to:
+
+```text
+f_corrected = f * 2 ** (s / 12)
+```
+
+The current `pop_align.py` writes the derived file at 22,050 Hz, and the
+training loop also loads it at 22,050 Hz. Pitch shifting changes frequency
+(and therefore musical key), but does not change beat timestamps.
+
+### `mix`: aligned piano-and-song audio
+
+This is intended to be a listening preview combining the song with a
+FluidSynth rendering of the aligned piano MIDI:
+
+```text
+mix(t) = song(t) + alpha * rendered_piano(t)
+```
+
+The path is declared by `MidiAudioPair`, but the current preprocessing code
+primarily writes `qmix` rather than `.mix.flac`; therefore `mix` may not exist
+in every dataset checkout.
+
+### Which signal is preserved and which is changed?
+
+The pipeline does not replace the original pop audio. It keeps the downloaded
+file and creates processed derivatives:
+
+```text
+original pop audio
+    +-- preserved: data/<piano_id>/<song_id>.wav
+    |
+    +-- pitch-shifted copy: data/<piano_id>/<song_id>.pitchshift.wav
+
+original piano MIDI transcription
+    +-- preserved: data/<piano_id>.mid
+    |
+    +-- time-warped copy: data/<piano_id>/<song_id>.mid
+```
+
+The alignment procedure is:
+
+1. Render the original piano MIDI to audio.
+2. Compare piano-rendered audio and original pop audio using chroma/onset
+   features.
+3. Estimate a time map `W` with MrMsDTW.
+4. Apply `W` to the piano MIDI note times.
+5. Estimate a chromatic key difference.
+6. Apply the opposite pitch shift to the derived pop audio.
+
+The reason for changing both representations in different ways is that the
+training pair must agree in both dimensions:
+
+```text
+time:  aligned MIDI time ~= pop-song time
+key:   MIDI pitches ~= pitch-shifted pop-song frequencies
+```
+
+It would be possible to keep the pop audio unchanged and transpose the MIDI
+instead, but that is not what this repository implements. Transposing the
+MIDI would change the piano arrangement's written pitches, while the current
+pipeline preserves those pitches and normalizes the audio key instead.
+
+### `beattime`: detected beat times in seconds
+
+This is an array:
+
+```text
+beattime = [t_0, t_1, ..., t_(B-1)]
+```
+
+where each `t_i` is a detected beat position measured from the start of the
+song. Neighboring values define the local beat duration and tempo:
+
+```text
+beat_duration_i = t_(i+1) - t_i
+tempo_BPM_i     = 60 / beat_duration_i
+```
+
+The values are estimated by Essentia's `RhythmExtractor2013` from the
+pitch-shifted `song` file. Because pitch shifting does not alter the time
+axis, these beat times correspond to the original pop recording's timing.
+
+### `beatinterval`: beat durations
+
+This stores Essentia's beat-interval output. In a regular beat track it is
+approximately:
+
+```text
+beatinterval[i] = beattime[i+1] - beattime[i]
+```
+
+The local tempo is therefore approximately:
+
+```text
+local_BPM[i] = 60 / beatinterval[i]
+```
+
+Because this is the tracker output, its boundary convention and length may
+differ from `beattime`; do not assume the two arrays have identical shapes.
+
+### `beatstep`: quantized eighth-note time grid
+
+This is the time grid used to convert continuous note times into integer
+positions. With two steps per beat, neighboring detected beats `t_i` and
+`t_(i+1)` produce approximately:
+
+```text
+u_(2i)   = t_i
+u_(2i+1) = (t_i + t_(i+1)) / 2
+u_(2i+2) = t_(i+1)
+```
+
+The values `u_i` are still seconds, but their indices are used by the model.
+For a note row `[onset_idx, offset_idx, pitch, velocity]`:
+
+```text
+start_time = beatstep[onset_idx]
+end_time   = beatstep[offset_idx]
+duration   = end_time - start_time
+```
+
+The quantizer assigns each continuous onset and offset to the nearest grid
+position:
+
+```text
+onset_idx  = nearest_index(beatstep, onset_seconds)
+offset_idx = nearest_index(beatstep, offset_seconds)
+```
+
+### `qmidi`: quantized piano MIDI
+
+This is a normal MIDI file whose note times have been snapped to `beatstep`.
+For every aligned piano note:
+
+```text
+quantized_start = beatstep[onset_idx]
+quantized_end   = beatstep[offset_idx]
+```
+
+`qmidi` is the renderable form of the same quantized score represented by
+`notes.npy`.
+
+### `qmix`: mix using quantized MIDI
+
+This is a listening preview created by rendering `qmidi` with FluidSynth and
+mixing it with `song`:
+
+```text
+qmidi --> FluidSynth --> piano waveform
+song  -----------------> song waveform
+both  --> get_stereo --> qmix.flac
+```
+
+It is useful for checking alignment and quantization, but it is not the main
+audio input to the transformer.
+
+### `notes`: NumPy note-event array
+
+This is the compact score used by the tokenizer. Each row is:
+
+```text
+[onset_idx, offset_idx, pitch, velocity]
+```
+
+| Column | Musical meaning |
+| --- | --- |
+| `onset_idx` | Start index in `beatstep` |
+| `offset_idx` | End index in `beatstep` |
+| `pitch` | MIDI pitch; 60 is middle C (C4) |
+| `velocity` | MIDI attack strength, normally 1–127 |
+
+For example:
+
+```text
+beatstep = [0.60, 0.95, 1.30, 1.65]
+notes[0] = [0, 2, 60, 90]
+```
+
+means “play C4 with velocity 90 from 0.60 s to 1.30 s.” `train.py` clips
+these rows to local windows and converts them into relative time, velocity,
+and pitch tokens.
+
+### `vqvae`: optional VQ-VAE audio features
+
+This is intended to contain discrete audio codes produced by a VQ-VAE
+encoder. Such codes can replace waveform/mel input in an alternative model.
+The current configuration uses:
+
+```yaml
+dataset:
+  use_mel: true
+```
+
+and the current repository does not create `.vqvae.pt`, so this file is not
+required by the current mel-based training or inference path.
+
+### `vocals`: separated vocal track
+
+This is the vocal stem extracted from the pop-song mix by Spleeter. It is
+mainly used for quality evaluation:
+
+```text
+vocals --> f0(t)
+qmidi  --> highest piano pitch(t)
+both   --> melody chroma/pitch accuracy
+```
+
+The resulting accuracy is stored in the metadata and used to reject poor
+pairs. `vocals` is not the principal transformer input and is not a MIDI
+representation.
+
+### Melody accuracy fields and training-data threshold
+
+The `eval` section of the metadata stores two complementary comparisons
+between the melody estimated from the vocal stem and the melody represented by
+the quantized piano MIDI:
+
+```yaml
+eval:
+  melody_chroma_accuracy: 0.22377447923163277
+  melody_pitch_accuracy: 0.014593987775976052
+```
+
+Both values are returned by `mir_eval.melody` and are in the range `0.0` to
+`1.0`, where larger values indicate better agreement.
+
+- **`melody_chroma_accuracy`** measures whether the estimated and reference
+  melodies agree in pitch class (the note name modulo octaves). For example,
+  C3 and C4 have the same chroma. This makes the metric tolerant of octave
+  errors while still checking whether the melody follows the same harmonic
+  pitch classes.
+- **`melody_pitch_accuracy`** measures whether the estimated and reference
+  melodies agree in their actual pitch, including octave. It is therefore
+  stricter than chroma accuracy: C3 and C4 do not count as the same pitch.
+
+The default threshold used by `MidiAudioPair` for accepting a sample as
+training data is:
+
+```text
+melody_chroma_accuracy >= 0.15
+```
+
+The check is implemented in `MidiAudioPair.validate_yaml`. A value below
+`0.15`, a missing `eval` section, or a missing
+`melody_chroma_accuracy` field produces `BAD_ACCURACY`, so the pair is not
+marked as valid training data. The pitch metric is currently recorded for
+diagnostics and evaluation only; **there is no independent default
+`melody_pitch_accuracy` threshold in the current code**.
+
+For the example above, `0.2238 >= 0.15`, so the sample passes the accuracy
+criterion despite its low pitch accuracy value. To introduce a pitch-based
+filter, `validate_yaml` would need an additional explicit threshold check.
+
 ### Cleanup
 
 `delete_files_myself` removes the song directory, YAML metadata, original MIDI,
@@ -116,7 +431,7 @@ sample = MidiAudioPair(
 )
 ```
 
-## 2. `MidiTokenizer`
+## 3. `MidiTokenizer`
 
 ### Purpose
 
@@ -148,7 +463,7 @@ seconds. `pitch` is a MIDI pitch and `velocity` is the MIDI velocity. In the
 current token representation, velocity is reduced to a binary state:
 `velocity > 0` means note-on and `velocity == 0` means note-off.
 
-## 3. Token vocabulary
+## 4. Token vocabulary
 
 The token ID ranges are contiguous:
 
@@ -179,7 +494,7 @@ token = tokenizer.tokenize_note(60, TOKEN_NOTE)
 token_type, value = tokenizer.detokenize(token, time_idx_offset=0)
 ```
 
-## 4. Absolute versus relative tokens
+## 5. Absolute versus relative tokens
 
 ### Absolute tokens
 
@@ -221,7 +536,7 @@ The optional `add_eos` flag appends the `EOS` special token. The optional
 `add_composer` flag prefixes a composer token, which allows a model to receive
 composer/style conditioning as part of the sequence.
 
-## 5. Decoding model output
+## 6. Decoding model output
 
 `relative_tokens_to_notes` reads a relative sequence and reconstructs absolute
 note-event rows. It tracks:
@@ -256,7 +571,7 @@ midi, decoded_notes = tokenizer.relative_batch_tokens_to_midi(
 midi.write("generated.mid")
 ```
 
-## 6. Converting notes to MIDI
+## 7. Converting notes to MIDI
 
 `notes_to_midi` maps note indices to seconds using `beatstep`. For each note,
 the start time is `beatstep[onset_idx]` and the end time is
@@ -276,7 +591,7 @@ midi.write("segment.mid")
 The resulting `PrettyMIDI` object contains one piano instrument with program
 number `0`. Invalid notes are removed before the object is returned.
 
-## 7. Selecting a song segment
+## 8. Selecting a song segment
 
 `split_notes` selects notes whose onset is between two times. It converts the
 requested seconds to beat indices using `np.searchsorted`, then slices the
@@ -319,7 +634,7 @@ MidiTokenizer          -> decode tokens to notes and PrettyMIDI
 generated MIDI file
 ```
 
-## 8. Practical considerations
+## 9. Practical considerations
 
 - Use quantized beat indices consistently. Do not pass seconds directly as
   `onset_idx` or `offset_idx`.

@@ -30,6 +30,7 @@ Run the preprocessing scripts in the documented order after creating the
 initial piano MIDI:
 
 ```bash
+python preprocess/wav_to_midi.py data
 python preprocess/pop_align.py data
 python preprocess/bpm_quantize.py data
 python preprocess/split_spleeter.py data

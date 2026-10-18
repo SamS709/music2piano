@@ -12,3 +12,4 @@ synctoolbox
 pretty_midi>=0.2.10
 spleeter
 mir-eval
+typer>=0.4.1

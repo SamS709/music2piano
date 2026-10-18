@@ -6,3 +6,4 @@ __pycache__
 /pretrained_models
 /checkpoints
 /checkpoints_smoke
+/data_clean
