@@ -88,14 +88,16 @@ def _local_music_metrics(
     start_frame: int,
     end_frame: int,
 ) -> dict[str, float]:
-    """Compare full-song audio chroma with MIDI chroma for one interval."""
+    """Compare synchronized chroma against a time-shuffled null baseline."""
     audio = audio_chroma[:, start_frame:end_frame]
     midi = midi_chroma[:, start_frame:end_frame]
     length = min(audio.shape[1], midi.shape[1])
     if length == 0:
         return {
-            "melody_chroma_accuracy": 0.0,
-            "melody_pitch_accuracy": 0.0,
+            "music_chroma_similarity": 0.0,
+            "music_chroma_null_similarity": 0.0,
+            "music_chroma_alignment_margin": 0.0,
+            "music_chroma_coverage": 0.0,
             "voicing_accuracy": 0.0,
             "voiced_fraction": 0.0,
             "midi_voiced_fraction": 0.0,
@@ -109,17 +111,40 @@ def _local_music_metrics(
     active = audio_active & midi_active
     if not np.any(active):
         return {
-            "melody_chroma_accuracy": 0.0,
-            "melody_pitch_accuracy": 0.0,
+            "music_chroma_similarity": 0.0,
+            "music_chroma_null_similarity": 0.0,
+            "music_chroma_alignment_margin": 0.0,
+            "music_chroma_coverage": 0.0,
             "voicing_accuracy": float(np.mean(audio_active == midi_active)),
             "voiced_fraction": float(np.mean(audio_active)),
             "midi_voiced_fraction": float(np.mean(midi_active)),
         }
     similarity = np.sum(audio[:, active] * midi[:, active], axis=0)
     similarity /= audio_norm[active] * midi_norm[active]
+    synchronized_similarity = float(np.mean(np.clip(similarity, 0.0, 1.0)))
+
+    rng = np.random.default_rng(0)
+    null_scores = []
+    active_indices = np.flatnonzero(active)
+    for _ in range(8):
+        shuffled = midi[:, rng.permutation(length)]
+        shuffled_norm = np.linalg.norm(shuffled[:, active_indices], axis=0)
+        valid = shuffled_norm > 1e-6
+        if np.any(valid):
+            null_similarity = np.sum(
+                audio[:, active_indices[valid]] * shuffled[:, active_indices[valid]],
+                axis=0,
+            )
+            null_similarity /= (
+                audio_norm[active_indices[valid]] * shuffled_norm[valid]
+            )
+            null_scores.append(float(np.mean(np.clip(null_similarity, 0.0, 1.0))))
+    null_mean = float(np.mean(null_scores)) if null_scores else 0.0
     return {
-        "melody_chroma_accuracy": float(np.mean(np.clip(similarity, 0.0, 1.0))),
-        "melody_pitch_accuracy": 0.0,
+        "music_chroma_similarity": synchronized_similarity,
+        "music_chroma_null_similarity": null_mean,
+        "music_chroma_alignment_margin": synchronized_similarity - null_mean,
+        "music_chroma_coverage": float(np.mean(active)),
         "voicing_accuracy": float(np.mean(audio_active == midi_active)),
         "voiced_fraction": float(np.mean(audio_active)),
         "midi_voiced_fraction": float(np.mean(midi_active)),
@@ -306,6 +331,7 @@ def clean_sample(
     min_notes: int,
     min_note_onsets: int,
     min_activity_iou: float,
+    min_alignment_margin: float,
     min_onset_f1: float,
     sample_index_start: int,
 ) -> int:
@@ -361,29 +387,31 @@ def clean_sample(
             continue
         start_frame = int(np.searchsorted(frame_times, beatstep[start_idx], side="left"))
         end_frame = int(np.searchsorted(frame_times, beatstep[end_idx], side="left"))
-        vocal_local = _local_metrics(f0, midi_pitch, start_frame, end_frame)
         music_local = _local_music_metrics(
             song_chroma, midi_chroma, start_frame, end_frame
         )
-        # Vocal stems are silent during instrumental sections. In those
-        # sections, use the full-song chroma instead of rejecting good MIDI.
-        if vocal_local["voiced_fraction"] >= 0.15:
-            local = vocal_local
-            local["metric_source"] = "vocals"
-        else:
-            local = music_local
-            local["metric_source"] = "song_chroma"
+        vocal_local = _local_metrics(f0, midi_pitch, start_frame, end_frame)
+        local = dict(music_local)
+        local["metric_source"] = "song_chroma"
+        local["vocal_melody_chroma_accuracy"] = vocal_local[
+            "melody_chroma_accuracy"
+        ]
+        local["vocal_melody_pitch_accuracy"] = vocal_local[
+            "melody_pitch_accuracy"
+        ]
+        local["vocal_voicing_accuracy"] = vocal_local["voicing_accuracy"]
         local.update(_activity_metrics(song_audio, midi_chroma, start_frame, end_frame))
         local.update(
             _onset_metrics(song_audio, piano_roll, start_frame, end_frame, song_sr)
         )
         local["alignment_score"] = float(
-            0.7 * local["melody_chroma_accuracy"]
-            + 0.2 * local["melody_pitch_accuracy"]
-            + 0.1 * local["activity_iou"]
+            0.7 * local["music_chroma_alignment_margin"]
+            + 0.2 * local["activity_iou"]
+            + 0.1 * local["music_chroma_coverage"]
         )
         if (
-            local["melody_chroma_accuracy"] < threshold
+            local["music_chroma_similarity"] < threshold
+            or local["music_chroma_alignment_margin"] < min_alignment_margin
             or local["activity_iou"] < min_activity_iou
             or local["onset_f1"] < min_onset_f1
         ):
@@ -440,7 +468,8 @@ def main() -> None:
         help="minimum distinct MIDI onset times per retained chunk",
     )
     parser.add_argument("--min-activity-iou", type=float, default=0.2)
-    parser.add_argument("--min-onset-f1", type=float, default=0.04)
+    parser.add_argument("--min-alignment-margin", type=float, default=0.05)
+    parser.add_argument("--min-onset-f1", type=float, default=0.0)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
@@ -460,6 +489,7 @@ def main() -> None:
             args.min_notes,
             args.min_note_onsets,
             args.min_activity_iou,
+            args.min_alignment_margin,
             args.min_onset_f1,
             index * 100000,
         )

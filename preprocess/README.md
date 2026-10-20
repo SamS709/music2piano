@@ -12,6 +12,11 @@ conda install -c conda-forge ffmpeg nodejs -y
 python -m pip install pandas tqdm joblib omegaconf
 ```
 
+```bash
+# test with --num_audio 1 to download the first row of the dataset
+python download/download.py     train_dataset.csv     data     --num_audio 1 
+```
+
 - The second to run the following scripts:
 
 ```bash
@@ -52,12 +57,24 @@ python melody_accuracy.py DATA_DIR
 python clean_aligned_data.py DATA_DIR data_clean --threshold 0.35
 ```
 
-`clean_aligned_data.py` evaluates overlapping beat-aligned windows using the
-vocal melody when that window contains enough voiced vocal audio. For
-instrumental or vocal-silent windows, it compares the full-song chroma with
-the MIDI chroma instead, so good piano/song alignment is not discarded merely
-because no vocal is present. It keeps windows whose local
-`melody_chroma_accuracy` is at least the selected threshold and writes each
+
+full pipeline:
+```bash
+python preprocess/wav_to_midi.py data
+python preprocess/pop_align.py data
+python preprocess/bpm_quantize.py data 
+python preprocess/split_spleeter.py data
+python preprocess/melody_accuracy.py data 
+python preprocess/clean_aligned_data.py data data_clean 
+
+```
+`clean_aligned_data.py` evaluates overlapping beat-aligned windows by comparing
+the full-song chroma with the MIDI chroma. This is the primary acceptance
+metric because the MIDI is a piano accompaniment, not necessarily the vocal
+melody. Vocal melody metrics are retained as diagnostics only, so good
+piano/song alignment is not discarded merely because the piano's highest note
+does not match the singer. It keeps windows whose local
+`music_chroma_similarity` is at least the selected threshold and writes each
 window as an independent sample under `data_clean/`. The output has the same
 metadata-at-root and song-directory layout as `data/`, including
 `*.pitchshift.wav`, `*.qmidi.mid`, `*.qmix.flac`, `*.beatstep.npy`, and
@@ -66,9 +83,14 @@ inspected as a MIDI/song stereo mix. The root-level `<chunk>.wav` is also the
 chunked song audio, not the original full piano recording. Chunks are also
 checked for audio/MIDI activity overlap and matched note-onset timing, preventing a
 high pitch/chroma score alone from accepting a badly timed section. Each
-chunk YAML records the metric source, local chroma, pitch, voicing, activity
-IoU, activity ratio, onset F1, note-density ratio, and combined alignment
-metrics plus its source time interval.
+chunk YAML records the music chroma similarity and coverage, vocal melody
+diagnostics, voicing, activity IoU, activity ratio, onset F1, note-density
+ratio, synchronized/null chroma, and alignment margin metrics plus its source
+time interval. The alignment margin is synchronized chroma similarity minus a
+time-shuffled MIDI-chroma baseline, preventing a globally similar key or chord
+vocabulary from passing without temporal agreement. Onset F1 is diagnostic by
+default and is not used as a hard filter unless `--min-onset-f1` is explicitly
+set.
 
 Useful options:
 
@@ -80,6 +102,7 @@ python clean_aligned_data.py DATA_DIR data_clean \
   --min-notes 12 \
   --min-note-onsets 4 \
   --min-activity-iou 0.20 \
+  --min-alignment-margin 0.05 \
   --min-onset-f1 0.05
 ```
 
