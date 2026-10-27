@@ -22,6 +22,7 @@ from omegaconf import OmegaConf
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from evaluate.midi_melody_accuracy import get_highest_pitches_from_piano_roll
 from utils.dsp import get_stereo
+from data_roots import dataset_roots, mirrored_root
 
 
 DEFAULT_SR = 44100
@@ -270,6 +271,7 @@ def _write_chunk(
     song_sr: int,
     aligned_midi: pretty_midi.PrettyMIDI,
     metrics: dict[str, float],
+    minimal: bool,
 ) -> None:
     source = OmegaConf.load(source_meta)
     piano_id = str(source.piano.ytid)
@@ -284,24 +286,23 @@ def _write_chunk(
     chunk_midi = _clip_midi(aligned_midi, start, end)
     chunk_midi_path = chunk_dir / f"{chunk_id}.qmidi.mid"
     chunk_midi.write(str(chunk_midi_path))
-    chunk_midi.write(str(chunk_dir / f"{chunk_id}.mid"))
     sf.write(chunk_dir / f"{chunk_id}.pitchshift.wav", chunk_audio, song_sr)
-    piano_audio = chunk_midi.fluidsynth(song_sr)
-    qmix = get_stereo(chunk_audio, piano_audio, pop_scale=0.4)
-    qmix = np.asarray(qmix.T, dtype=np.float32)
-    sf.write(str(chunk_dir / f"{chunk_id}.qmix.flac"), qmix, song_sr, format="flac")
 
     chunk_beatstep = beatstep[start_idx : end_idx + 1] - start
     np.save(chunk_dir / f"{chunk_id}.beatstep.npy", chunk_beatstep)
     np.save(chunk_dir / f"{chunk_id}.notes.npy", _chunk_notes(notes, beatstep, start_idx, end_idx))
 
-    # These files make the output layout compatible with MidiAudioPair and
-    # preserve the original source identifiers for traceability.
-    np.save(chunk_dir / f"{chunk_id}.beattime.npy", chunk_beatstep[::2])
-    np.save(
-        chunk_dir / f"{chunk_id}.beatinterval.npy",
-        np.diff(chunk_beatstep[::2]),
-    )
+    if not minimal:
+        chunk_midi.write(str(chunk_dir / f"{chunk_id}.mid"))
+        piano_audio = chunk_midi.fluidsynth(song_sr)
+        qmix = get_stereo(chunk_audio, piano_audio, pop_scale=0.4)
+        qmix = np.asarray(qmix.T, dtype=np.float32)
+        sf.write(str(chunk_dir / f"{chunk_id}.qmix.flac"), qmix, song_sr, format="flac")
+        np.save(chunk_dir / f"{chunk_id}.beattime.npy", chunk_beatstep[::2])
+        np.save(
+            chunk_dir / f"{chunk_id}.beatinterval.npy",
+            np.diff(chunk_beatstep[::2]),
+        )
 
     metadata = OmegaConf.create(source)
     metadata.piano.ytid = chunk_id
@@ -317,9 +318,10 @@ def _write_chunk(
     metadata.eval.end_seconds = end
     OmegaConf.save(metadata, output_dir / f"{chunk_id}.yaml")
 
-    # MidiAudioPair expects these two root-level files for every metadata file.
-    sf.write(output_dir / f"{chunk_id}.wav", chunk_audio, song_sr)
-    chunk_midi.write(str(output_dir / f"{chunk_id}.mid"))
+    if not minimal:
+        # Preserve compatibility with older consumers expecting root-level files.
+        sf.write(output_dir / f"{chunk_id}.wav", chunk_audio, song_sr)
+        chunk_midi.write(str(output_dir / f"{chunk_id}.mid"))
 
 
 def clean_sample(
@@ -334,6 +336,7 @@ def clean_sample(
     min_alignment_margin: float,
     min_onset_f1: float,
     sample_index_start: int,
+    minimal: bool,
 ) -> int:
     source = OmegaConf.load(source_meta)
     source_dir = source_meta.parent / str(source.piano.ytid)
@@ -443,6 +446,7 @@ def clean_sample(
             song_sr,
             pm,
             local,
+            minimal,
         )
         kept += 1
     return kept
@@ -454,7 +458,7 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--threshold", type=float, default=0.35)
     parser.add_argument("--window-seconds", type=float, default=8.0)
-    parser.add_argument("--hop-seconds", type=float, default=4.0)
+    parser.add_argument("--hop-seconds", type=float, default=8.0)
     parser.add_argument(
         "--min-notes",
         type=int,
@@ -470,29 +474,44 @@ def main() -> None:
     parser.add_argument("--min-activity-iou", type=float, default=0.2)
     parser.add_argument("--min-alignment-margin", type=float, default=0.05)
     parser.add_argument("--min-onset-f1", type=float, default=0.0)
+    parser.add_argument(
+        "--minimal",
+        action="store_true",
+        help=(
+            "write only metadata, chunk audio, chunk qmidi, beatstep, and notes; "
+            "use non-overlapping windows"
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
         if not args.overwrite:
             parser.error(f"{args.output_dir} is not empty; use --overwrite to replace it")
         shutil.rmtree(args.output_dir)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
     total = 0
-    for index, meta_file in enumerate(sorted(Path(args.data_dir).glob("*.yaml"))):
-        total += clean_sample(
-            meta_file,
-            args.output_dir,
-            args.threshold,
-            args.window_seconds,
-            args.hop_seconds,
-            args.min_notes,
-            args.min_note_onsets,
-            args.min_activity_iou,
-            args.min_alignment_margin,
-            args.min_onset_f1,
-            index * 100000,
-        )
+    if args.minimal:
+        args.hop_seconds = args.window_seconds
+    roots = dataset_roots(args.data_dir)
+    if not roots:
+        parser.error(f"No numbered dataset roots found below {args.data_dir}")
+    for root_index, source_root in enumerate(roots):
+        output_root = mirrored_root(source_root, args.output_dir)
+        output_root.mkdir(parents=True, exist_ok=True)
+        for index, meta_file in enumerate(sorted(source_root.glob("*.yaml"))):
+            total += clean_sample(
+                meta_file,
+                output_root,
+                args.threshold,
+                args.window_seconds,
+                args.hop_seconds,
+                args.min_notes,
+                args.min_note_onsets,
+                args.min_activity_iou,
+                args.min_alignment_margin,
+                args.min_onset_f1,
+                (root_index * 100000) + index * 1000,
+                args.minimal,
+            )
     print(f"kept {total} aligned chunks in {args.output_dir}")
 
 

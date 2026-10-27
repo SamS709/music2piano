@@ -17,12 +17,24 @@ python -m pip install pandas tqdm joblib omegaconf
 python download/download.py     train_dataset.csv     data     --num_audio 1 
 ```
 
+Each piano/song pair is stored in its own numbered directory
+(`data/data_0`, `data/data_1`, ...). The downloader uses the active Python
+environment's `yt-dlp` module and ignores incomplete `.part` files. If a pair
+cannot be downloaded after the configured retries, that pair is skipped and
+the remaining pairs continue.
+
 - The second to run the following scripts:
 
 ```bash
 conda create -n music2piano python=3.9
 pip install -r requirements.txt
+# rubberband-cli is also required by pop_align.py
+conda install -c conda-forge rubberband ffmpeg
 ```
+
+`pop_align.py` uses `pyrubberband`, which is only the Python wrapper; it also
+needs the external `rubberband` executable. If it is missing, alignment stops
+before processing samples so later stages are not run on incomplete files.
 
 
 # Preprocess Scripts
@@ -75,8 +87,9 @@ melody. Vocal melody metrics are retained as diagnostics only, so good
 piano/song alignment is not discarded merely because the piano's highest note
 does not match the singer. It keeps windows whose local
 `music_chroma_similarity` is at least the selected threshold and writes each
-window as an independent sample under `data_clean/`. The output has the same
-metadata-at-root and song-directory layout as `data/`, including
+window as an independent sample under `data_clean/data_clean_i/`, with one clean numbered directory corresponding to
+each source song directory `data/data_i/`. The output has the same
+metadata-at-root and song-directory layout as its source, including
 `*.pitchshift.wav`, `*.qmidi.mid`, `*.qmix.flac`, `*.beatstep.npy`, and
 `*.notes.npy`, so it can be passed directly to the training script or
 inspected as a MIDI/song stereo mix. The root-level `<chunk>.wav` is also the
@@ -114,6 +127,18 @@ and `eval.midi_onset_count` in each chunk YAML.
 
 The script refuses to overwrite a non-empty output directory unless
 `--overwrite` is supplied.
+
+For a storage-efficient training dataset, use:
+
+```bash
+python clean_aligned_data.py data data_clean --minimal --overwrite
+```
+
+`--minimal` sets the hop equal to the window length, so consecutive windows
+do not overlap. It writes only the metadata, chunked `*.pitchshift.wav`,
+`*.qmidi.mid`, `*.beatstep.npy`, and `*.notes.npy` files needed by the
+training loader and MIDI target pipeline. It omits qmix audio, duplicate
+root-level WAV/MIDI files, duplicate `.mid` files, and auxiliary beat arrays.
 
 # Expected Structure
 ```

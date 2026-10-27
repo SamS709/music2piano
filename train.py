@@ -15,6 +15,7 @@ import pytorch_lightning as pl
 from midiaudiopair import MidiAudioPair
 from midi_tokenizer import MidiTokenizer
 from transformer_wrapper import TransformerWrapper
+from data_roots import metadata_files
 
 
 class Pop2PianoDataset(Dataset):
@@ -147,7 +148,7 @@ class TrainableTransformer(TransformerWrapper):
 
 
 def valid_meta_files(data_dir):
-    return sorted(glob.glob(os.path.join(data_dir, "*.yaml")))
+    return metadata_files(data_dir)
 
 
 def main(args):

@@ -13,6 +13,7 @@ from beat_quantizer import extract_rhythm, midi_quantize_by_beats
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from midiaudiopair import MidiAudioPair
+from data_roots import metadata_files
 from utils.dsp import get_stereo
 
 
@@ -24,6 +25,9 @@ def estimate(meta_file, ignore_sustain_pedal):
         or sample.error_code == MidiAudioPair.NO_SONG_DIR
         or sample.error_code == MidiAudioPair.NO_SONG
     ):
+        return
+    if not os.path.isfile(sample.song):
+        print(f"Skipping {meta_file}: aligned song is missing ({sample.song})")
         return
 
     bpm, beat_times, confidence, estimates, essentia_beat_intervals = extract_rhythm(
@@ -93,7 +97,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    meta_files = sorted(glob.glob(args.data_dir + "/*.yaml"))
+    meta_files = [str(path) for path in metadata_files(args.data_dir)]
     print("meta ", len(meta_files))
 
     main(meta_files, args.ignore_sustain_pedal)

@@ -12,12 +12,17 @@ script is not included in this checkout.
 - Downloader : ```download/download.py```
     - ```python download.py train_dataset.csv data/```
 
+Each downloaded piano/song pair gets its own numbered dataset directory below
+`data/`, such as `data/data_0` and `data/data_1`. Training and preprocessing
+commands accept the container directory (`data`) and discover all numbered
+datasets automatically.
+
 ### Preprocess Data
 ---
 - [Details](./preprocess/)
 
 The training dataset must be fully preprocessed before training. For each
-metadata file in `data/`, the corresponding song directory must contain at
+metadata file in `data/data_i/`, the corresponding song directory must contain at
 least:
 
 ```text
@@ -35,6 +40,7 @@ python preprocess/pop_align.py data
 python preprocess/bpm_quantize.py data
 python preprocess/split_spleeter.py data
 python preprocess/melody_accuracy.py data
+python preprocess/clean_aligned_data.py data data_clean
 ```
 
 ## Training environment
@@ -169,6 +175,4 @@ find checkpoints_smoke -type f | sort
 One processed song is enough for a smoke test, but not for useful learning.
 Meaningful training requires many independent processed songs and a proper
 arranger/composer label for each example if style conditioning is required.
-
-
 

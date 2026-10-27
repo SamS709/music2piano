@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from midiaudiopair import MidiAudioPair
+from data_roots import metadata_files
 
 
 def split_spleeter(meta_files):
@@ -26,6 +27,9 @@ def split_spleeter(meta_files):
         if sample.error_code == MidiAudioPair.NO_SONG:
             continue
         if os.path.exists(sample.vocals):
+            continue
+        if not os.path.isfile(sample.song):
+            print(f"Skipping {meta_file}: aligned song is missing ({sample.song})")
             continue
 
         waveform, _ = audio_loader.load(sample.song, sample_rate=sample_rate)
@@ -63,7 +67,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    meta_files = sorted(glob.glob(args.data_dir + "/*.yaml"))
+    meta_files = [str(path) for path in metadata_files(args.data_dir)]
     if args.random_order:
         random.shuffle(meta_files)
 

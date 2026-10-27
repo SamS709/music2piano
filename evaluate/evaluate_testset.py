@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from midiaudiopair import MidiAudioPair
+from data_roots import metadata_files
 from evaluate import midi_melody_accuracy as ma
 from transformer_wrapper import DEFAULT_COMPOSERS
 
@@ -112,7 +113,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    meta_files = sorted(glob.glob(args.data_dir + "/**/*.yaml", recursive=True))
+    meta_files = [str(path) for path in metadata_files(args.data_dir)]
     print("meta ", len(meta_files))
 
     main(meta_files, **vars(args))

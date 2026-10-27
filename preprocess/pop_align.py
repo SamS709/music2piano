@@ -4,6 +4,7 @@ import glob
 import os
 import copy
 import sys
+import shutil
 
 import numpy as np
 import pyrubberband as pyrb
@@ -31,6 +32,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 print(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.dsp import normalize, get_stereo
 from midiaudiopair import MidiAudioPair
+from data_roots import metadata_files
 
 Fs = 22050
 feature_rate = 50
@@ -282,6 +284,13 @@ def main(samples, dry_run):
     import multiprocessing
     from joblib import Parallel, delayed
 
+    if not dry_run and shutil.which("rubberband") is None:
+        raise RuntimeError(
+            "rubberband-cli is required by pop_align.py for pitch shifting. "
+            "Install it with `conda install -c conda-forge rubberband` "
+            "or install the rubberband-cli system package, then rerun alignment."
+        )
+
     Parallel(n_jobs=multiprocessing.cpu_count() // 2)(
         delayed(save_delayed_song)(sample=sample, dry_run=dry_run)
         for sample in tqdm(samples)
@@ -308,7 +317,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     def getfiles():
-        meta_files = sorted(glob.glob(args.data_dir + "/*.yaml"))
+        meta_files = [str(path) for path in metadata_files(args.data_dir)]
         print("meta ", len(meta_files))
 
         samples = list()
