@@ -152,6 +152,86 @@ def _local_music_metrics(
     }
 
 
+def _vocal_chroma_metrics(
+    vocal_chroma: np.ndarray,
+    midi_chroma: np.ndarray,
+    start_frame: int,
+    end_frame: int,
+) -> dict[str, float]:
+    """Return the chroma alignment metrics with vocal-specific names."""
+    metrics = _local_music_metrics(
+        vocal_chroma, midi_chroma, start_frame, end_frame
+    )
+    return {
+        "vocal_chroma_similarity": metrics["music_chroma_similarity"],
+        "vocal_chroma_null_similarity": metrics["music_chroma_null_similarity"],
+        "vocal_chroma_alignment_margin": metrics[
+            "music_chroma_alignment_margin"
+        ],
+        "vocal_chroma_coverage": metrics["music_chroma_coverage"],
+    }
+
+
+def _vocal_chord_support_metrics(
+    vocal_f0: np.ndarray,
+    midi_chroma: np.ndarray,
+    start_frame: int,
+    end_frame: int,
+    tolerance_frames: int = 3,
+) -> dict[str, float]:
+    """Measure whether active MIDI chords contain the vocal pitch class.
+
+    A chord may support a vocal note without duplicating its exact pitch or
+    having the same chroma vector, so this uses pitch-class containment.
+    """
+    f0 = vocal_f0[start_frame:end_frame]
+    midi = midi_chroma[:, start_frame:end_frame] > 1e-6
+    length = min(f0.size, midi.shape[1])
+    if length == 0:
+        return {
+            "vocal_chord_support": 0.0,
+            "vocal_chord_support_null": 0.0,
+            "vocal_chord_support_margin": 0.0,
+            "vocal_voiced_coverage": 0.0,
+        }
+    f0 = f0[:length]
+    midi = midi[:, :length]
+    vocal_pitch_classes = np.full(length, -1, dtype=int)
+    voiced = np.isfinite(f0)
+    vocal_pitch_classes[voiced] = (
+        np.rint(librosa.hz_to_midi(f0[voiced])).astype(int) % 12
+    )
+    if not np.any(voiced):
+        return {
+            "vocal_chord_support": 0.0,
+            "vocal_chord_support_null": 0.0,
+            "vocal_chord_support_margin": 0.0,
+            "vocal_voiced_coverage": 0.0,
+        }
+
+    def score(chords: np.ndarray) -> float:
+        supported = []
+        for index in np.flatnonzero(voiced):
+            left = max(0, index - tolerance_frames)
+            right = min(length, index + tolerance_frames + 1)
+            supported.append(np.any(chords[vocal_pitch_classes[index], left:right]))
+        return float(np.mean(supported))
+
+    synchronized = score(midi)
+    rng = np.random.default_rng(0)
+    null_scores = [
+        score(midi[:, rng.permutation(length)])
+        for _ in range(8)
+    ]
+    null_mean = float(np.mean(null_scores))
+    return {
+        "vocal_chord_support": synchronized,
+        "vocal_chord_support_null": null_mean,
+        "vocal_chord_support_margin": synchronized - null_mean,
+        "vocal_voiced_coverage": float(np.mean(voiced)),
+    }
+
+
 def _activity_metrics(
     audio: np.ndarray,
     midi_chroma: np.ndarray,
@@ -272,6 +352,7 @@ def _write_chunk(
     aligned_midi: pretty_midi.PrettyMIDI,
     metrics: dict[str, float],
     minimal: bool,
+    kept: bool,
 ) -> None:
     source = OmegaConf.load(source_meta)
     piano_id = str(source.piano.ytid)
@@ -312,6 +393,7 @@ def _write_chunk(
     metadata.song.duration = end - start
     metadata.song.title = f"{source.song.title} [chunk {sample_index:04d}]"
     metadata.eval = OmegaConf.create(metrics)
+    metadata.eval.kept = kept
     metadata.eval.source_piano_ytid = piano_id
     metadata.eval.source_song_ytid = song_id
     metadata.eval.start_seconds = start
@@ -334,9 +416,12 @@ def clean_sample(
     min_note_onsets: int,
     min_activity_iou: float,
     min_alignment_margin: float,
+    min_vocal_coverage: float,
+    min_vocal_margin: float,
     min_onset_f1: float,
     sample_index_start: int,
     minimal: bool,
+    debug: bool,
 ) -> int:
     source = OmegaConf.load(source_meta)
     source_dir = source_meta.parent / str(source.piano.ytid)
@@ -367,13 +452,19 @@ def clean_sample(
     song_chroma = librosa.feature.chroma_stft(
         y=song_audio, sr=DEFAULT_SR, hop_length=DEFAULT_HOP_LENGTH
     )
+    vocal_chroma = librosa.feature.chroma_stft(
+        y=metric_audio, sr=DEFAULT_SR, hop_length=DEFAULT_HOP_LENGTH
+    )
     pm = pretty_midi.PrettyMIDI(str(midi_path))
-    frame_count = min(len(f0), song_chroma.shape[1])
+    frame_count = min(
+        len(f0), song_chroma.shape[1], vocal_chroma.shape[1]
+    )
     frame_times = np.arange(frame_count) * DEFAULT_HOP_LENGTH / DEFAULT_SR
     piano_roll = pm.get_piano_roll(
         fs=DEFAULT_SR / DEFAULT_HOP_LENGTH, times=frame_times
     )
     song_chroma = song_chroma[:, :frame_count]
+    vocal_chroma = vocal_chroma[:, :frame_count]
     midi_chroma = _midi_chroma(piano_roll)
     midi_pitch = get_highest_pitches_from_piano_roll(piano_roll).astype(float)
     midi_pitch[midi_pitch == 0] = np.nan
@@ -383,7 +474,7 @@ def clean_sample(
     duration = min(float(beatstep[-1]), len(song_audio) / song_sr)
     window_steps = max(2, int(np.searchsorted(beatstep, window_seconds, side="left")))
     hop_steps = max(1, int(np.searchsorted(beatstep, hop_seconds, side="left")))
-    kept = 0
+    exported = 0
     for start_idx in range(0, len(beatstep) - window_steps, hop_steps):
         end_idx = start_idx + window_steps
         if end_idx >= len(beatstep) or beatstep[end_idx] > duration:
@@ -393,9 +484,17 @@ def clean_sample(
         music_local = _local_music_metrics(
             song_chroma, midi_chroma, start_frame, end_frame
         )
+        vocal_chroma_local = _vocal_chroma_metrics(
+            vocal_chroma, midi_chroma, start_frame, end_frame
+        )
+        vocal_support_local = _vocal_chord_support_metrics(
+            f0, midi_chroma, start_frame, end_frame
+        )
         vocal_local = _local_metrics(f0, midi_pitch, start_frame, end_frame)
         local = dict(music_local)
-        local["metric_source"] = "song_chroma"
+        local.update(vocal_chroma_local)
+        local.update(vocal_support_local)
+        local["metric_source"] = "vocals" if vocal_path.exists() else "song_chroma"
         local["vocal_melody_chroma_accuracy"] = vocal_local[
             "melody_chroma_accuracy"
         ]
@@ -412,13 +511,30 @@ def clean_sample(
             + 0.2 * local["activity_iou"]
             + 0.1 * local["music_chroma_coverage"]
         )
-        if (
+        local["vocal_alignment_score"] = float(
+            local["vocal_chord_support_margin"]
+        )
+        passes_music_alignment = not (
             local["music_chroma_similarity"] < threshold
             or local["music_chroma_alignment_margin"] < min_alignment_margin
             or local["activity_iou"] < min_activity_iou
             or local["onset_f1"] < min_onset_f1
-        ):
-            continue
+        )
+        passes_vocal_alignment = not (
+            local["vocal_chord_support"] < threshold
+            or local["vocal_voiced_coverage"] < min_vocal_coverage
+            or local["vocal_chord_support_margin"] < min_vocal_margin
+        )
+        local["music_alignment_passed"] = passes_music_alignment
+        local["vocal_alignment_passed"] = passes_vocal_alignment
+        if passes_music_alignment and passes_vocal_alignment:
+            local["alignment_source"] = "music+vocals"
+        elif passes_music_alignment:
+            local["alignment_source"] = "music"
+        elif passes_vocal_alignment:
+            local["alignment_source"] = "vocals"
+        else:
+            local["alignment_source"] = "none"
         chunk_notes = notes[
             (notes[:, 0] < end_idx) & (notes[:, 1] > start_idx)
         ]
@@ -429,15 +545,20 @@ def clean_sample(
         )
         local["midi_note_count"] = int(chunk_notes.shape[0])
         local["midi_onset_count"] = int(chunk_onsets)
-        if (
+        passes_note_filter = not (
             local["midi_note_count"] < min_notes
             or local["midi_onset_count"] < min_note_onsets
-        ):
+        )
+        kept_chunk = (
+            (passes_music_alignment or passes_vocal_alignment)
+            and passes_note_filter
+        )
+        if not kept_chunk and not debug:
             continue
         _write_chunk(
             source_meta,
             output_dir,
-            sample_index_start + kept,
+            sample_index_start + exported,
             start_idx,
             end_idx,
             beatstep,
@@ -447,9 +568,10 @@ def clean_sample(
             pm,
             local,
             minimal,
+            kept_chunk,
         )
-        kept += 1
-    return kept
+        exported += 1
+    return exported
 
 
 def main() -> None:
@@ -458,7 +580,7 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--threshold", type=float, default=0.35)
     parser.add_argument("--window-seconds", type=float, default=8.0)
-    parser.add_argument("--hop-seconds", type=float, default=8.0)
+    parser.add_argument("--hop-seconds", type=float, default=4.0)
     parser.add_argument(
         "--min-notes",
         type=int,
@@ -473,6 +595,18 @@ def main() -> None:
     )
     parser.add_argument("--min-activity-iou", type=float, default=0.2)
     parser.add_argument("--min-alignment-margin", type=float, default=0.05)
+    parser.add_argument(
+        "--min-vocal-coverage",
+        type=float,
+        default=0.20,
+        help="minimum fraction of the window with detected vocal pitch",
+    )
+    parser.add_argument(
+        "--min-vocal-margin",
+        type=float,
+        default=-0.05,
+        help="minimum vocal support margin versus the shuffled baseline",
+    )
     parser.add_argument("--min-onset-f1", type=float, default=0.0)
     parser.add_argument(
         "--minimal",
@@ -480,6 +614,14 @@ def main() -> None:
         help=(
             "write only metadata, chunk audio, chunk qmidi, beatstep, and notes; "
             "use non-overlapping windows"
+        ),
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "export rejected candidate chunks too, marking eval.kept as false; "
+            "accepted chunks are marked true"
         ),
     )
     parser.add_argument("--overwrite", action="store_true")
@@ -490,7 +632,7 @@ def main() -> None:
         shutil.rmtree(args.output_dir)
     total = 0
     if args.minimal:
-        args.hop_seconds = args.window_seconds
+        args.hop_seconds = 1/2 * args.window_seconds
     roots = dataset_roots(args.data_dir)
     if not roots:
         parser.error(f"No numbered dataset roots found below {args.data_dir}")
@@ -508,11 +650,15 @@ def main() -> None:
                 args.min_note_onsets,
                 args.min_activity_iou,
                 args.min_alignment_margin,
+                args.min_vocal_coverage,
+                args.min_vocal_margin,
                 args.min_onset_f1,
                 (root_index * 100000) + index * 1000,
                 args.minimal,
+                args.debug,
             )
-    print(f"kept {total} aligned chunks in {args.output_dir}")
+    label = "exported" if args.debug else "kept"
+    print(f"{label} {total} aligned chunks in {args.output_dir}")
 
 
 if __name__ == "__main__":

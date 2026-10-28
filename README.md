@@ -40,7 +40,7 @@ python preprocess/pop_align.py data
 python preprocess/bpm_quantize.py data
 python preprocess/split_spleeter.py data
 python preprocess/melody_accuracy.py data
-python preprocess/clean_aligned_data.py data data_clean
+python preprocess/cleaner.py data data_clean
 ```
 
 ## Training environment

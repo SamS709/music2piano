@@ -66,7 +66,7 @@ python melody_accuracy.py DATA_DIR
 
 6. keep only well-aligned chunks
 ```bash
-python clean_aligned_data.py DATA_DIR data_clean --threshold 0.35
+python cleaner.py DATA_DIR data_clean --threshold 0.35
 ```
 
 
@@ -74,19 +74,25 @@ full pipeline:
 ```bash
 python preprocess/wav_to_midi.py data
 python preprocess/pop_align.py data
-python preprocess/bpm_quantize.py data 
+python preprocess/bpm_quantize.py data
 python preprocess/split_spleeter.py data
-python preprocess/melody_accuracy.py data 
-python preprocess/clean_aligned_data.py data data_clean 
+python preprocess/melody_accuracy.py data
+python preprocess/cleaner.py data data_clean
 
 ```
-`clean_aligned_data.py` evaluates overlapping beat-aligned windows by comparing
-the full-song chroma with the MIDI chroma. This is the primary acceptance
-metric because the MIDI is a piano accompaniment, not necessarily the vocal
-melody. Vocal melody metrics are retained as diagnostics only, so good
-piano/song alignment is not discarded merely because the piano's highest note
-does not match the singer. It keeps windows whose local
-`music_chroma_similarity` is at least the selected threshold and writes each
+`cleaner.py` evaluates overlapping beat-aligned windows by comparing
+the full-song and vocal signals with the MIDI chroma. A window is accepted when
+the full-song alignment **or** the vocal chord-support alignment passes its
+thresholds. The vocal branch checks whether the pitch class estimated from the
+vocal is present in the active MIDI chord, with a small timing tolerance. This
+allows piano accompaniment that supports the vocals without exactly doubling
+the vocal melody. It keeps windows whose local
+`music_chroma_similarity` or `vocal_chord_support` is at least the selected
+threshold. The vocal branch also requires at least 20% voiced-vocal coverage
+and a support margin of at least -0.05 by default. These safeguards prevent a
+short accidental vocal detection or a much better shuffled baseline from
+accepting a bad chunk. Adjust them with `--min-vocal-coverage` and
+`--min-vocal-margin`. It writes each
 window as an independent sample under `data_clean/data_clean_i/`, with one clean numbered directory corresponding to
 each source song directory `data/data_i/`. The output has the same
 metadata-at-root and song-directory layout as its source, including
@@ -108,7 +114,7 @@ set.
 Useful options:
 
 ```bash
-python clean_aligned_data.py DATA_DIR data_clean \
+python cleaner.py DATA_DIR data_clean \
   --threshold 0.40 \
   --window-seconds 8 \
   --hop-seconds 4 \
@@ -131,7 +137,7 @@ The script refuses to overwrite a non-empty output directory unless
 For a storage-efficient training dataset, use:
 
 ```bash
-python clean_aligned_data.py data data_clean --minimal --overwrite
+python cleaner.py data data_clean --minimal --overwrite
 ```
 
 `--minimal` sets the hop equal to the window length, so consecutive windows
@@ -139,6 +145,18 @@ do not overlap. It writes only the metadata, chunked `*.pitchshift.wav`,
 `*.qmidi.mid`, `*.beatstep.npy`, and `*.notes.npy` files needed by the
 training loader and MIDI target pipeline. It omits qmix audio, duplicate
 root-level WAV/MIDI files, duplicate `.mid` files, and auxiliary beat arrays.
+
+To inspect rejected windows, add `--debug`:
+
+```bash
+python preprocess/cleaner.py data data_clean_debug \
+  --minimal --debug --overwrite
+```
+
+Debug mode exports every candidate window, including windows that fail one or
+more filters. Their metadata contains `eval.kept: true` for accepted windows
+and `eval.kept: false` for rejected windows. All computed metrics and rejection
+counts remain in the YAML, so the failing thresholds can be identified.
 
 # Expected Structure
 ```

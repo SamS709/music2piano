@@ -7,3 +7,4 @@ __pycache__
 /checkpoints
 /checkpoints_smoke
 /data_clean
+/data_full
