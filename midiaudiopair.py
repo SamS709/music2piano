@@ -50,18 +50,21 @@ class MidiAudioPair:
         Example:
             ``missing = sample.validate_files()``
         """
-        attrs = [
-            "midi",
-            "song",
-            "beattime",
-            "beatstep",
-            "beatinterval",
-            "qmidi",
-            "qmix",
-            "notes",
-            "vqvae",
-            "vocals",
-        ]
+        if self.is_clean_chunk:
+            attrs = ["song", "beatstep", "qmidi", "notes"]
+        else:
+            attrs = [
+                "midi",
+                "song",
+                "beattime",
+                "beatstep",
+                "beatinterval",
+                "qmidi",
+                "qmix",
+                "notes",
+                "vqvae",
+                "vocals",
+            ]
 
         invalids = []
         for attr in attrs:
@@ -101,7 +104,14 @@ class MidiAudioPair:
         if not hasattr(yaml, "tempo"):
             return MidiAudioPair.NO_TEMPO
 
-        if not hasattr(yaml, "eval") or yaml.eval.melody_chroma_accuracy < 0.15:
+        if not hasattr(yaml, "eval"):
+            return MidiAudioPair.BAD_ACCURACY
+        if hasattr(yaml.eval, "kept"):
+            return MidiAudioPair.VALID
+        if (
+            not hasattr(yaml.eval, "melody_chroma_accuracy")
+            or yaml.eval.melody_chroma_accuracy < 0.15
+        ):
             return MidiAudioPair.BAD_ACCURACY
 
         return MidiAudioPair.VALID
@@ -154,6 +164,9 @@ class MidiAudioPair:
         self.yaml_path = yaml_path
 
         self.yaml = OmegaConf.load(yaml_path)
+        self.is_clean_chunk = hasattr(self.yaml, "eval") and hasattr(
+            self.yaml.eval, "kept"
+        )
 
         self.audio_dir = (
             audio_dir if audio_dir is not None else os.path.dirname(yaml_path)

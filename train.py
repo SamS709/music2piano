@@ -41,6 +41,11 @@ class Pop2PianoDataset(Dataset):
 
         for meta_file in meta_files:
             sample = MidiAudioPair(meta_file)
+            if not sample.is_valid or (
+                sample.is_clean_chunk
+                and not bool(getattr(sample.yaml.eval, "kept", False))
+            ):
+                continue
             required = (
                 getattr(sample, "song", None),
                 getattr(sample, "beatstep", None),

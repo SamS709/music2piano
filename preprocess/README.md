@@ -143,7 +143,9 @@ python cleaner.py data data_clean --minimal --overwrite
 `--minimal` sets the hop equal to the window length, so consecutive windows
 do not overlap. It writes only the metadata, chunked `*.pitchshift.wav`,
 `*.qmidi.mid`, `*.beatstep.npy`, and `*.notes.npy` files needed by the
-training loader and MIDI target pipeline. It omits qmix audio, duplicate
+training loader and MIDI target pipeline. `train.py` recognizes these clean
+chunks through `eval.kept` and does not require the original
+`melody_chroma_accuracy`, qmix, vocal, or auxiliary beat files. It omits qmix audio, duplicate
 root-level WAV/MIDI files, duplicate `.mid` files, and auxiliary beat arrays.
 
 To inspect rejected windows, add `--debug`:
