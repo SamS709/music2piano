@@ -2,7 +2,7 @@ project: pop2piano
 dataset:
   target_length: 256
   input_length: 1024
-  n_bars: 2
+  n_bars: 4
   sample_rate: 22050
   use_mel: true
   mel_is_conditioned: true
