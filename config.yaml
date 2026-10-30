@@ -46,9 +46,9 @@ training:
   resume: false
   offline: false
   num_gpu: 1
-  max_epochs: 5000
+  max_epochs: 2
   accumulate_grad_batches: 1
-  check_val_every_n_epoch: 20
+  check_val_every_n_epoch: 1
   find_lr: false
   optimizer: adafactor
   version: none
@@ -59,3 +59,14 @@ training:
   batch_size: 32
   num_workers: 32
   gradient_clip_val: 3.0
+  warmup_steps: 500
+  weight_decay: 0.01
+  scheduler: cosine     # ou "none"
+encoder:
+  name: m-a-p/MERT-v1-95M
+  revision: null        # à fixer sur un hash de commit
+  sample_rate: 24000
+  freeze: true
+  normalize_waveform: true
+  context_seconds: 2.0
+  lr_mult: 0.1          # seulement si freeze: false

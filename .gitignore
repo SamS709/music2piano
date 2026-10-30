@@ -8,3 +8,4 @@ __pycache__
 /checkpoints_smoke
 /data_clean
 /data_full
+/output
