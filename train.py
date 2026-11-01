@@ -19,6 +19,7 @@ class TrainableTransformer(TransformerWrapper):
         return self(batch).loss
 
     def training_step(self, batch, batch_idx):
+        print(batch)
         loss = self._step(batch)
         self.log(
             "train_loss",

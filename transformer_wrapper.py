@@ -485,7 +485,7 @@ class TransformerWrapper(pl.LightningModule):
         model="generated",
         steps_per_beat=2,
         stereo_amp=0.5,
-        n_bars=2,
+        n_bars=4,
         ignore_duplicate=True,
         show_plot=False,
         save_midi=False,

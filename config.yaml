@@ -39,16 +39,17 @@ tokenizer:
   vocab_size:
     special: 4
     note: 128
-    velocity: 2
     time: 100
+    duration: 32
+    velocity_bins: 0
 training:
   seed: 3407
   resume: false
   offline: false
   num_gpu: 1
-  max_epochs: 2
+  max_epochs: 100
   accumulate_grad_batches: 2
-  check_val_every_n_epoch: 1
+  check_val_every_n_epoch: 5
   find_lr: false
   optimizer: adafactor
   version: none
@@ -61,12 +62,12 @@ training:
   gradient_clip_val: 3.0
   warmup_steps: 500
   weight_decay: 0.01
-  scheduler: cosine     # ou "none"
+  scheduler: cosine # or none
 encoder:
   name: m-a-p/MERT-v1-95M
-  revision: null        # à fixer sur un hash de commit
+  revision: null
   sample_rate: 24000
   freeze: true
   normalize_waveform: true
   context_seconds: 2.0
-  lr_mult: 0.1          # seulement si freeze: false
+  lr_mult: 0.1 # only if weights unfreezed

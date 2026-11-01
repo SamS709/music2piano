@@ -1,5 +1,7 @@
 """Dataset, collate function and train/validation split for Pop2Piano training.
 
+Targets use the onset+duration MIDI tokenizer.
+
 Training segments are sampled **inside the good regions** written by
 ``cleaner.py`` (``<song>.clean.json``). Audio is read from the original song, so
 each segment gets its full ``context_seconds`` of neighbouring audio, exactly as
@@ -8,13 +10,16 @@ at inference (only the very start/end of a song is truncated).
 A segment is ``n_bars * 4`` beat steps. Besides its audio, an item carries the
 segment's position inside the audio window and its beat grid, which the model
 uses for the beat-position embedding.
+
+At start-up every segment is tokenized once. Segments whose target is longer
+than ``max_target_length`` are dropped (cutting them would remove the EOS and
+the end of the music), and the share of discarded segments is printed.
 """
 
 from __future__ import annotations
 
 import json
 import random
-from functools import lru_cache
 from pathlib import Path
 
 import librosa
@@ -28,16 +33,7 @@ from midi_tokenizer import MidiTokenizer
 from transformer_wrapper import get_encoder_config
 
 
-@lru_cache(maxsize=128)
-def _load_notes(path: str) -> np.ndarray:
-    """Per-process cache: neighbouring segments come from the same song."""
-    return np.load(path)
-
-
 class Pop2PianoDataset(Dataset):
-    # How many times a too-long target is replaced by the next segment.
-    MAX_RESAMPLE = 20
-
     def __init__(
         self,
         meta_files,
@@ -75,11 +71,13 @@ class Pop2PianoDataset(Dataset):
         self.tokenizer = MidiTokenizer(config.tokenizer)
         self.composer_value = composer_value
 
-        self.songs = []  # dicts: song_path, notes_path, beatstep
+        self.songs = []  # dicts: song_path, beatstep
         self.samples = []  # (song index, start step)
+        self.targets = []  # token array of each kept segment
         self.sample_weights = []
 
-        n_no_manifest = n_regions = 0
+        n_no_manifest = n_regions = n_discarded = 0
+        token_lengths = []  # of every tokenized segment, kept or not
         for meta_file in meta_files:
             meta_file = Path(meta_file)
             source = OmegaConf.load(meta_file)
@@ -109,15 +107,11 @@ class Pop2PianoDataset(Dataset):
                 continue
 
             song_index = len(self.songs)
-            self.songs.append(
-                {
-                    "song_path": str(song_path),
-                    "notes_path": str(notes_path),
-                    "beatstep": beatstep,
-                }
-            )
+            self.songs.append({"song_path": str(song_path), "beatstep": beatstep})
+            # Segment ownership is based on note onset for the onset+duration
+            # tokenizer. A note that starts in a segment counts there even if it
+            # ends beyond the segment; a note that only overlaps it does not.
             note_starts = np.sort(notes[:, 0])
-            note_ends = np.sort(notes[:, 1])
             for region in regions:
                 n_regions += 1
                 first = int(region["start_step"])
@@ -127,60 +121,73 @@ class Pop2PianoDataset(Dataset):
                 if starts.size == 0:
                     continue
                 ends = starts + self.steps_per_segment
-                # notes overlapping [start, end) = (note start < end) - (note end <= start)
+                # Count notes whose onset lies in [start, end), matching
+                # MidiTokenizer.segment_to_tokens() segment ownership.
                 n_notes = np.searchsorted(note_starts, ends, side="left") - np.searchsorted(
-                    note_ends, starts, side="right"
+                    note_starts, starts, side="left"
                 )
                 weight = max(float(region.get("score", 1.0)), 1e-3)
                 for start in starts[n_notes >= min_segment_notes]:
-                    self.samples.append((song_index, int(start)))
+                    start = int(start)
+                    tokens = self._tokenize_segment(notes, start)
+                    token_lengths.append(len(tokens))
+                    if len(tokens) > self.max_target_length:
+                        n_discarded += 1
+                        continue
+                    self.samples.append((song_index, start))
+                    self.targets.append(np.asarray(tokens, dtype=np.int32))
                     self.sample_weights.append(weight)
 
-        if not self.samples:
+        n_total = len(token_lengths)
+        if n_total == 0:
             raise ValueError(
                 "No training segments found. Run cleaner.py first (it writes a "
                 f"<song>.clean.json per song); {n_no_manifest} songs had no manifest."
             )
+        if not self.samples:
+            raise ValueError(
+                f"All {n_total} segments have more than max_target_length="
+                f"{self.max_target_length} tokens. Raise dataset.target_length or "
+                "use a smaller n_bars."
+            )
+        p50, p90, p99 = np.percentile(token_lengths, [50, 90, 99])
         print(
             f"Pop2PianoDataset: {len(self.songs)} songs, {n_regions} regions, "
-            f"{len(self.samples)} segments ({n_no_manifest} songs without manifest)"
+            f"{len(self.samples)} segments kept ({n_no_manifest} songs without manifest)\n"
+            f"  discarded {n_discarded}/{n_total} segments "
+            f"({100.0 * n_discarded / n_total:.2f} %) with more than "
+            f"{self.max_target_length} target tokens\n"
+            f"  target length: p50 {p50:.0f} / p90 {p90:.0f} / p99 {p99:.0f} / "
+            f"max {max(token_lengths)}"
+        )
+
+    def _tokenize_segment(self, notes, start):
+        """Tokenize notes whose onsets lie in this segment, including EOS.
+
+        Notes are passed with their original absolute onset/offset indices.
+        The onset+duration tokenizer converts onsets to segment-relative times
+        and preserves note durations across segment boundaries (subject to its
+        configured maximum duration).
+        """
+        end = start + self.steps_per_segment
+        return self.tokenizer.segment_to_tokens(
+            notes,
+            start=start,
+            end=end,
+            add_eos=True,
         )
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, index):
-        # A segment whose target is longer than max_target_length cannot be
-        # trained on without losing its EOS, so another segment is used instead.
-        for _ in range(self.MAX_RESAMPLE):
-            item = self._load(index, truncate=False)
-            if item is not None:
-                return item
-            index = (index + 1) % len(self.samples)
-        return self._load(index, truncate=True)
-
-    def _load(self, index, truncate):
         song_index, start = self.samples[index]
         song = self.songs[song_index]
         beatstep = song["beatstep"]
-        notes = _load_notes(song["notes_path"])
 
         end = start + self.steps_per_segment
         start_time = float(beatstep[start])
         end_time = float(beatstep[end])
-
-        segment_notes = notes[(notes[:, 0] < end) & (notes[:, 1] > start)].copy()
-        segment_notes[:, 0] = np.maximum(segment_notes[:, 0], start) - start
-        segment_notes[:, 1] = np.minimum(segment_notes[:, 1], end) - start
-        tokens = self.tokenizer.notes_to_relative_tokens(
-            segment_notes,
-            offset_idx=0,
-            add_eos=True,
-        )
-        if len(tokens) > self.max_target_length:
-            if not truncate:
-                return None
-            tokens = tokens[: self.max_target_length]
 
         # Segment plus context, read from the full song. Truncated only at the
         # song start (offset clamped to 0) and end (librosa returns what exists).
@@ -202,7 +209,7 @@ class Pop2PianoDataset(Dataset):
             "offset": float(start_time - win_start),
             "duration": float(end_time - start_time),
             "beat_grid": torch.from_numpy(beat_grid.astype(np.float32)),
-            "labels": torch.tensor(tokens, dtype=torch.long),
+            "labels": torch.tensor(self.targets[index], dtype=torch.long),
             "composer": torch.tensor(self.composer_value, dtype=torch.long),
         }
 
