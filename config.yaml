@@ -47,7 +47,7 @@ training:
   offline: false
   num_gpu: 1
   max_epochs: 2
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 2
   check_val_every_n_epoch: 1
   find_lr: false
   optimizer: adafactor
@@ -56,7 +56,7 @@ training:
   lr_min: 1.0e-06
   lr_scheduler: false
   lr_decay: 0.99
-  batch_size: 32
+  batch_size: 16
   num_workers: 32
   gradient_clip_val: 3.0
   warmup_steps: 500

@@ -135,6 +135,7 @@ class MidiAudioPair:
         self.qmidi = basename + ".qmidi.mid"
         self.qmix = basename + ".qmix.flac"
         self.notes = basename + ".notes.npy"
+        self.clean_manifest = basename + ".clean.json"
         self.vqvae = basename + ".vqvae.pt"
         self.vocals = basename + ".vocals.mp3"
 

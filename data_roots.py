@@ -51,7 +51,11 @@ def next_dataset_root(path: PathLike) -> Path:
 
 
 def mirrored_root(source_root: PathLike, output_root: PathLike) -> Path:
-    """Map data/data_0 to data_clean/data_clean_0."""
+    """Map a numbered source root to a numbered output root.
+
+    Kept for preprocessing commands that still create derived datasets.
+    The cleaner writes manifests in-place and does not use this helper.
+    """
     source = Path(source_root)
     output = Path(output_root)
     match = re.fullmatch(r".+_(\d+)", source.name)
