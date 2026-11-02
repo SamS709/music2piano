@@ -47,7 +47,6 @@ def main(args):
             audio_path=str(audio_path),
             composer=args.composer,
             n_bars=n_bars,
-            overlap_steps=args.overlap_steps,
             max_batch_size=args.max_batch_size,
             generation_kwargs=generation_kwargs,
             seed=args.seed,
@@ -69,12 +68,6 @@ if __name__ == "__main__":
     parser.add_argument("--composer", default="composer1")
     parser.add_argument(
         "--n_bars", type=int, default=None, help="default: dataset.n_bars"
-    )
-    parser.add_argument(
-        "--overlap_steps",
-        type=int,
-        default=None,
-        help="beat steps shared by neighbouring chunks (default: half a chunk, 0 = off)",
     )
     parser.add_argument(
         "--max_batch_size",

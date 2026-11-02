@@ -13,8 +13,11 @@ Differences from the original wrapper
 * The composer embedding is prepended as one extra encoder frame.
 * An attention mask is built from the real chunk lengths and passed to T5
   (training and generation), so padding is never attended to.
-* Decoding is configurable (sampling by default) and chunks can be generated
-  with an overlap: only the notes in the middle of each chunk are kept.
+* Targets use the onset + duration tokenizer (``midi_tokenizer.py``): a chunk
+  owns the notes that start inside it, so consecutive chunks are simply
+  concatenated (no overlap or stitching). Onset positions are absolute inside
+  the chunk, so inference must use the training ``n_bars``.
+* Decoding is configurable (sampling by default).
 * Bug fixes: missing f-string, ``y`` undefined when ``beatsteps`` is given,
   dead ``feature_tokens`` path removed.
 """
@@ -165,6 +168,11 @@ class TransformerWrapper(pl.LightningModule):
         self.t5config = T5Config.from_pretrained("t5-small")
         for k, v in config.t5.items():
             setattr(self.t5config, k, v)
+        if self.t5config.vocab_size < self.tokenizer.vocab_total:
+            raise ValueError(
+                f"t5.vocab_size ({self.t5config.vocab_size}) is smaller than the "
+                f"tokenizer vocabulary ({self.tokenizer.vocab_total})"
+            )
         self.transformer = T5ForConditionalGeneration(self.t5config)
         d_model = self.t5config.d_model
 
@@ -332,39 +340,6 @@ class TransformerWrapper(pl.LightningModule):
             grids.append(_fit_grid(grid, n_steps + 1))
         return windows, offsets, durations, grids
 
-    def _decode_with_overlap(
-        self, relative_tokens, ext_beatstep, starts, n_bars, n_steps, overlap_steps
-    ):
-        """Decode chunks one by one and keep each chunk's middle notes only.
-
-        Chunk ``i`` starts at beat step ``starts[i]`` and "owns" the notes whose
-        onset lies in [s_i + margin, s_i + margin + stride) (the first chunk
-        also owns everything before, the last one everything after). Notes keep
-        their full length even if they ring into the next chunk's region.
-        """
-        margin = overlap_steps // 2
-        stride = n_steps - overlap_steps
-        merged, pm_ref = [], None
-        for i, s in enumerate(starts):
-            pm_i, _ = self.tokenizer.relative_batch_tokens_to_midi(
-                relative_tokens[i : i + 1],
-                beatstep=ext_beatstep[s:],
-                bars_per_batch=n_bars,
-                cutoff_time_idx=(n_bars + 1) * 4,
-            )
-            if pm_ref is None:
-                pm_ref = pm_i
-            lo = 0.0 if i == 0 else float(ext_beatstep[s + margin])
-            hi = (
-                float("inf")
-                if i == len(starts) - 1
-                else float(ext_beatstep[s + margin + stride])
-            )
-            merged.extend(n for n in pm_i.instruments[0].notes if lo <= n.start < hi)
-        merged.sort(key=lambda n: (n.start, n.pitch))
-        pm_ref.instruments[0].notes = merged
-        return pm_ref
-
     @torch.no_grad()
     def single_inference(
         self,
@@ -374,23 +349,29 @@ class TransformerWrapper(pl.LightningModule):
         max_batch_size=64,
         n_bars=None,
         composer_value=None,
-        overlap_steps=0,
         generation_kwargs=None,
     ):
-        """Generate MIDI for a whole song.
+        """Generate MIDI for a whole song, one chunk of ``n_bars`` bars at a time.
 
         audio    : 1-D float tensor at ``self.sample_rate``, already trimmed to
                    [beatstep[0], beatstep[-1]]
         beatstep : (time,) beat-step times in seconds, beatstep[0] == 0
-        overlap_steps : beat steps shared by consecutive chunks (0 = disjoint
-                   chunks decoded in one tokenizer call, like the original)
         """
         assert audio.ndim == 1
         n_bars = self.config.dataset.n_bars if n_bars is None else n_bars
         n_steps = n_bars * 4
-        overlap_steps = int(overlap_steps)
-        if not 0 <= overlap_steps < n_steps:
-            raise ValueError(f"overlap_steps must be in [0, {n_steps})")
+        if n_steps > self.tokenizer.n_time:
+            raise ValueError(
+                f"a chunk of {n_steps} steps does not fit the time vocabulary "
+                f"({self.tokenizer.n_time})"
+            )
+        if n_bars != self.config.dataset.n_bars:
+            print(
+                f"inference warning : n_bars={n_bars} differs from the training "
+                f"value ({self.config.dataset.n_bars}); onset positions are "
+                "absolute inside a chunk, so positions never seen in training "
+                "may be generated badly."
+            )
         PAD = self.t5config.pad_token_id
 
         beatstep = np.asarray(beatstep, dtype=np.float64)
@@ -403,13 +384,7 @@ class TransformerWrapper(pl.LightningModule):
 
         ext_beatstep = extrapolate_beat_times(beatstep, (n_bars + 1) * 4 + 1)
         n_target_step = len(beatstep)
-        stride = n_steps - overlap_steps
-        margin = overlap_steps // 2
-        starts = [
-            s
-            for s in range(0, n_target_step, stride)
-            if s == 0 or s + margin < n_target_step
-        ]
+        starts = list(range(0, n_target_step, n_steps))
 
         windows, offsets, durations, grids = self._make_chunks(
             audio, ext_beatstep, starts, n_steps, n_target_step
@@ -463,18 +438,14 @@ class TransformerWrapper(pl.LightningModule):
             ]
         )
 
-        if overlap_steps == 0:
-            pm, notes = self.tokenizer.relative_batch_tokens_to_midi(
-                relative_tokens,
-                beatstep=ext_beatstep,
-                bars_per_batch=n_bars,
-                cutoff_time_idx=(n_bars + 1) * 4,
-            )
-        else:
-            pm = self._decode_with_overlap(
-                relative_tokens, ext_beatstep, starts, n_bars, n_steps, overlap_steps
-            )
-            notes = None  # the merged result lives in ``pm``
+        # Each chunk owns the notes that start inside it; notes starting at or
+        # after the last beat (past the audio) are dropped.
+        pm, notes = self.tokenizer.relative_batch_tokens_to_midi(
+            relative_tokens,
+            beatstep=ext_beatstep,
+            bars_per_batch=n_bars,
+            max_onset_idx=n_target_step - 1,
+        )
         return relative_tokens, notes, pm
 
     @torch.no_grad()
@@ -485,7 +456,7 @@ class TransformerWrapper(pl.LightningModule):
         model="generated",
         steps_per_beat=2,
         stereo_amp=0.5,
-        n_bars=4,
+        n_bars=None,
         ignore_duplicate=True,
         show_plot=False,
         save_midi=False,
@@ -499,19 +470,19 @@ class TransformerWrapper(pl.LightningModule):
         mix_sample_rate=None,
         audio_y=None,
         audio_sr=None,
-        overlap_steps=None,
         generation_kwargs=None,
         seed=None,
     ):
         """Cover one song.
 
-        overlap_steps : beat steps shared by neighbouring chunks (default: half
-                        a chunk; 0 disables overlap).
+        n_bars        : chunk length in bars (default: ``dataset.n_bars``, the
+                        value used for training).
         generation_kwargs : overrides for ``T5.generate`` (e.g.
                         ``{"do_sample": False, "num_beams": 4}``).
         seed          : makes sampling reproducible.
         """
         config = self.config
+        n_bars = config.dataset.n_bars if n_bars is None else n_bars
 
         if audio_path is not None:
             extension = os.path.splitext(audio_path)[1]
@@ -582,9 +553,6 @@ class TransformerWrapper(pl.LightningModule):
             np.ascontiguousarray(y_model[start_sample:end_sample], dtype=np.float32)
         ).to(self.device)
 
-        if overlap_steps is None:
-            overlap_steps = (n_bars * 4) // 2
-
         relative_tokens, notes, pm = self.single_inference(
             audio=_audio,
             beatstep=beatsteps - beatsteps[0],
@@ -593,7 +561,6 @@ class TransformerWrapper(pl.LightningModule):
             max_batch_size=max_batch_size,
             n_bars=n_bars,
             composer_value=composer_value,
-            overlap_steps=overlap_steps,
             generation_kwargs=generation_kwargs,
         )
 

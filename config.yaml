@@ -1,10 +1,8 @@
 project: pop2piano
 dataset:
   target_length: 256
-  input_length: 1024
   n_bars: 4
   sample_rate: 22050
-  use_mel: true
   mel_is_conditioned: true
 composer_to_feature_token:
   composer1: 2052
@@ -32,8 +30,7 @@ t5:
   feed_forward_proj: gated-gelu
   tie_word_embeddings: false
   tie_encoder_decoder: false
-  vocab_size: 2400
-  n_positions: 1024
+  vocab_size: 288
   relative_attention_num_buckets: 32
 tokenizer:
   vocab_size:
@@ -43,26 +40,21 @@ tokenizer:
     duration: 32
     velocity_bins: 0
 training:
-  seed: 3407
   resume: false
-  offline: false
   num_gpu: 1
   max_epochs: 100
   accumulate_grad_batches: 2
   check_val_every_n_epoch: 5
   find_lr: false
   optimizer: adafactor
-  version: none
   lr: 0.001
   lr_min: 1.0e-06
-  lr_scheduler: false
-  lr_decay: 0.99
   batch_size: 16
-  num_workers: 32
   gradient_clip_val: 3.0
   warmup_steps: 500
   weight_decay: 0.01
   scheduler: cosine # or none
+  log_every_n_steps: 10
 encoder:
   name: m-a-p/MERT-v1-95M
   revision: null

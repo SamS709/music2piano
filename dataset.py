@@ -1,7 +1,5 @@
 """Dataset, collate function and train/validation split for Pop2Piano training.
 
-Targets use the onset+duration MIDI tokenizer.
-
 Training segments are sampled **inside the good regions** written by
 ``cleaner.py`` (``<song>.clean.json``). Audio is read from the original song, so
 each segment gets its full ``context_seconds`` of neighbouring audio, exactly as
@@ -10,6 +8,9 @@ at inference (only the very start/end of a song is truncated).
 A segment is ``n_bars * 4`` beat steps. Besides its audio, an item carries the
 segment's position inside the audio window and its beat grid, which the model
 uses for the beat-position embedding.
+
+A segment *owns* the notes whose onset lies inside it; their durations are not
+clipped at the segment border (see ``midi_tokenizer.py``).
 
 At start-up every segment is tokenized once. Segments whose target is longer
 than ``max_target_length`` are dropped (cutting them would remove the EOS and
@@ -49,7 +50,7 @@ class Pop2PianoDataset(Dataset):
         stride_fraction  : segment stride as a fraction of the segment length.
                            1.0 = disjoint segments, 0.5 = 50 % overlap (more
                            varied beat phases; use it for training only).
-        min_segment_notes: segments with fewer notes are skipped.
+        min_segment_notes: segments with fewer note onsets are skipped.
         min_region_score : skip regions whose mean cleaner score is lower.
 
         ``sample_weights`` (one value per segment, the score of its region) can
@@ -108,9 +109,6 @@ class Pop2PianoDataset(Dataset):
 
             song_index = len(self.songs)
             self.songs.append({"song_path": str(song_path), "beatstep": beatstep})
-            # Segment ownership is based on note onset for the onset+duration
-            # tokenizer. A note that starts in a segment counts there even if it
-            # ends beyond the segment; a note that only overlaps it does not.
             note_starts = np.sort(notes[:, 0])
             for region in regions:
                 n_regions += 1
@@ -121,15 +119,16 @@ class Pop2PianoDataset(Dataset):
                 if starts.size == 0:
                     continue
                 ends = starts + self.steps_per_segment
-                # Count notes whose onset lies in [start, end), matching
-                # MidiTokenizer.segment_to_tokens() segment ownership.
+                # note onsets inside [start, end)
                 n_notes = np.searchsorted(note_starts, ends, side="left") - np.searchsorted(
                     note_starts, starts, side="left"
                 )
                 weight = max(float(region.get("score", 1.0)), 1e-3)
                 for start in starts[n_notes >= min_segment_notes]:
                     start = int(start)
-                    tokens = self._tokenize_segment(notes, start)
+                    tokens = self.tokenizer.segment_to_tokens(
+                        notes, start, start + self.steps_per_segment, add_eos=True
+                    )
                     token_lengths.append(len(tokens))
                     if len(tokens) > self.max_target_length:
                         n_discarded += 1
@@ -159,22 +158,6 @@ class Pop2PianoDataset(Dataset):
             f"{self.max_target_length} target tokens\n"
             f"  target length: p50 {p50:.0f} / p90 {p90:.0f} / p99 {p99:.0f} / "
             f"max {max(token_lengths)}"
-        )
-
-    def _tokenize_segment(self, notes, start):
-        """Tokenize notes whose onsets lie in this segment, including EOS.
-
-        Notes are passed with their original absolute onset/offset indices.
-        The onset+duration tokenizer converts onsets to segment-relative times
-        and preserves note durations across segment boundaries (subject to its
-        configured maximum duration).
-        """
-        end = start + self.steps_per_segment
-        return self.tokenizer.segment_to_tokens(
-            notes,
-            start=start,
-            end=end,
-            add_eos=True,
         )
 
     def __len__(self):

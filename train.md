@@ -23,12 +23,12 @@ The task is a **sequence-to-sequence** problem: given a short, beat-aligned exce
                           └────────────── prepend composer frame ◄────────────────┘
                                            │  (+ attention mask)
                                            ▼
-                         T5 encoder  ──►  T5 decoder  ──►  relative MIDI tokens
+                         T5 encoder  ──►  T5 decoder  ──►  onset/duration MIDI tokens
                        (from scratch)     (from scratch)    (cross-entropy loss)
 ```
 
 - **Input**: MERT features of the excerpt, a beat-position embedding, and one composer frame.
-- **Output**: a sequence of relative MIDI tokens (note, velocity and time tokens relative to the segment's beat grid), ending with EOS. They are produced by `MidiTokenizer`.
+- **Output**: a sequence of tokens `TIME PITCH DURATION PITCH DURATION … TIME …`, ending with EOS (see section 3.8). They are produced by `MidiTokenizer`. A segment owns the notes that **start** inside it.
 - **Loss**: token-level cross-entropy with teacher forcing (the standard Hugging Face T5 loss).
 
 | File | Role |
@@ -93,10 +93,10 @@ At start-up the dataset loads every `beatstep.npy` and `notes.npy` once to build
 | `offset` | float, seconds | Where the segment starts inside `audio` |
 | `duration` | float, seconds | Length of the segment |
 | `beat_grid` | `(S+1,)` float32, `S = n_bars*4` | Beat-step times relative to the segment start (`beat_grid[0] = 0`) |
-| `labels` | `(T,)` long | Target tokens from `notes_to_relative_tokens(..., add_eos=True)`, truncated to `target_length` |
+| `labels` | `(T,)` long | Target tokens from `tokenizer.segment_to_tokens(notes, start, end)`; segments longer than `target_length` are discarded at start-up |
 | `composer` | long | Composer token value from `composer_to_feature_token` |
 
-The notes are clipped to the segment and re-indexed relative to its first step before tokenization.
+Only the notes whose **onset** lies in the segment are tokenized, with their real durations (capped at the duration vocabulary). Notes held over from the previous segment are not repeated, and nothing is clipped at the segment end.
 
 ### 2.5 Batching (`collate_batch`)
 
@@ -161,7 +161,7 @@ The sequence is given to T5 as `inputs_embeds` together with `attention_mask`, s
 
 - A `T5ForConditionalGeneration` built from the `t5-small` config (downloaded from the hub) with every key of `config.t5` applied on top, then **initialised from scratch** (only MERT is pretrained).
 - The encoder reads the sequence above. The decoder generates the tokens autoregressively.
-- Vocabulary: defined by `config.t5.vocab_size` and `MidiTokenizer`.
+- Vocabulary: `[special 4][pitch 128][time][duration][velocity bins]`. `config.t5.vocab_size` must be at least `tokenizer.vocab_total` (264 with the defaults); the model refuses to start otherwise.
 
 ### 3.7 What is trained
 
@@ -172,6 +172,22 @@ The sequence is given to T5 as `inputs_embeds` together with `attention_mask`, s
 | `feat_norm`, `audio_proj`, `beat_proj`, `input_norm` | yes | Adapters between MERT and T5 |
 | `composer_embedding` | yes | |
 | T5 encoder and decoder | yes | From scratch |
+
+### 3.8 Tokenizer (`midi_tokenizer.py`)
+
+A target is the sequence of the notes that start inside the segment, ordered by onset then pitch:
+
+```
+TIME(t)  PITCH(p) DURATION(d)  PITCH(p) DURATION(d)  ...  TIME(t')  PITCH(p) DURATION(d) ...  EOS
+```
+
+- `TIME(t)`: absolute beat-step position of the onset inside the segment, emitted once per distinct onset (notes of a chord share it).
+- `DURATION(d)`: note length in beat steps (1 to `vocab_size.duration`, longer notes are capped). It is never clipped at the segment end: the audio context (`context_seconds`) lets the model see what follows.
+- `VELOCITY(v)` (optional, `velocity_bins > 0`): emitted before a note only when the bin changes. Off by default; every note then gets velocity 77.
+- It costs about 20-25 % fewer tokens than the previous on/off scheme on dense segments (2 tokens per note + 1 per distinct onset), and there are no note-off, velocity-toggle or offset-time tokens.
+- Decoding never fails on damaged output: a pitch without a duration is ignored, repeated notes keep the longest duration, and onsets outside the chunk are dropped.
+
+Because a chunk only writes the notes that start in it, neighbouring chunks never cut or re-strike a held note, which the previous tokenizer did at every chunk border.
 
 ---
 
@@ -202,7 +218,7 @@ Checkpoints include the frozen MERT weights, so they are larger than the trainab
 
 | Key | Used for |
 |---|---|
-| `tokenizer.*` | Passed to `MidiTokenizer` |
+| `tokenizer.vocab_size.*` | `special` (4), `note` (128), `time` (must be ≥ steps per segment, e.g. 100), `duration` (default 32), `velocity_bins` (default 0 = no dynamics). The old `velocity` key is ignored |
 | `t5.*` | Overrides on the `t5-small` config (`d_model`, `num_layers`, `vocab_size`, ...) |
 | `dataset.n_bars` | Segment length: `n_bars * 4` beat steps |
 | `dataset.target_length` | Maximum number of target tokens (also the base `max_length` at inference) |
@@ -260,12 +276,12 @@ python train.py DATA_DIR [options]
 Inference (`TransformerWrapper.generate`) reuses the same input path, so these must match what the model saw during training:
 
 - **`steps_per_beat`** (2 in `generate`) and the way the beat grid is built.
-- **`n_bars`**: training uses `dataset.n_bars`; inference can use a multiple of it (the beat features are not tied to a fixed length), but values far from the training length are untested.
+- **`n_bars`**: onset positions are **absolute** inside a chunk, so inference must use the same `dataset.n_bars` as training (the default). Other values print a warning and may generate positions never seen in training.
 - **Context**: inference uses full `context_seconds` on both sides, while training chunks may be truncated at their edges.
 - **Encoder settings**: `encoder.name`, `sample_rate`, `normalize_waveform` must be the same.
 - **Composer**: pass a composer from `composer_to_feature_token`.
 
-Inference-only options: sampling (`generation_kwargs`, `seed`) and chunk overlap (`overlap_steps`, half a chunk by default, 0 disables it).
+Inference-only options: sampling (`generation_kwargs`, `seed`). Chunks are generated independently and simply concatenated: each one only writes the notes that start in it, so no overlap or stitching is needed.
 
 ---
 
