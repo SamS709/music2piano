@@ -17,6 +17,23 @@ python -m pip install pandas tqdm joblib omegaconf
 python download/download.py     train_dataset.csv     data     --num_audio 1 
 ```
 
+For larger downloads, YouTube may require authentication. Export cookies from
+an authenticated browser or let yt-dlp read them directly, then pass one of:
+
+```bash
+python download/download.py train_dataset.csv data \
+  --cookies-from-browser chrome --num_audio 10
+python download/download.py train_dataset.csv data \
+  --cookies /path/to/cookies.txt --num_audio 10
+```
+
+The browser must be logged in to YouTube. Keep `cookies.txt` private and do
+not commit it. Cookies do not guarantee that YouTube will allow unlimited
+downloads. The downloader waits between requests and skips pairs that were
+already completed, so rerunning the command can safely resume. Use
+`--sleep-between-pairs` to increase the delay if YouTube rate-limits the
+session.
+
 Each piano/song pair is stored in its own numbered directory
 (`data/data_0`, `data/data_1`, ...). The downloader uses the active Python
 environment's `yt-dlp` module and ignores incomplete `.part` files. If a pair
@@ -77,7 +94,7 @@ python preprocess/pop_align.py data
 python preprocess/bpm_quantize.py data
 python preprocess/split_spleeter.py data
 python preprocess/melody_accuracy.py data
-python preprocess/cleaner.py data data_clean
+python preprocess/cleaner.py data
 
 ```
 `cleaner.py` evaluates overlapping beat-aligned windows by comparing

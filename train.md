@@ -253,6 +253,7 @@ training:
 ### Command line
 
 ```
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 python train.py DATA_DIR [options]
 ```
 

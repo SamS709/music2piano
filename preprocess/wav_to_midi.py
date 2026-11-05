@@ -7,7 +7,7 @@ from data_roots import dataset_roots
 
 def main(data_dir: str = "data"):
 
-    transcriptor = PianoTranscription(device="cpu", checkpoint_path=None)
+    transcriptor = PianoTranscription(device="cuda", checkpoint_path=None)
 
     for root in dataset_roots(data_dir):
         for wav in glob.glob(f"{root}/*.wav"):          # top-level wavs = piano covers

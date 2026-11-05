@@ -42,12 +42,12 @@ tokenizer:
 training:
   resume: false
   num_gpu: 1
-  max_epochs: 100
+  max_epochs: 10000
   accumulate_grad_batches: 2
-  check_val_every_n_epoch: 5
+  check_val_every_n_epoch: 10
   find_lr: false
   optimizer: adafactor
-  lr: 0.001
+  lr: 0.0001
   lr_min: 1.0e-06
   batch_size: 16
   gradient_clip_val: 3.0

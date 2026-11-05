@@ -1,0 +1,15 @@
+pretty-midi
+omegaconf
+transformers 
+pytorch-lightning
+essentia
+note-seq
+pyFluidSynth
+torch
+torchaudio
+pyrubberband
+synctoolbox
+pretty_midi
+spleeter
+mir-eval
+typer

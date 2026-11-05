@@ -1,6 +1,7 @@
 """Turn pop songs into piano covers.
 
-    python inference.py path/to/song.mp3 --checkpoint checkpoints/.../best.ckpt
+    python inference.py JIQiGN-vO-g.pitchshift.wav --checkpoint checkpoints/lightning_logs/version_2/checkpoints/last.ckpt
+    python inference.py 8Sc4Pb7d1Nk.pitchshift.wav --checkpoint checkpoints/lightning_logs/version_2/checkpoints/last.ckpt
 
 writes ``output/song.mid``.
 """

@@ -40,7 +40,7 @@ python preprocess/pop_align.py data
 python preprocess/bpm_quantize.py data
 python preprocess/split_spleeter.py data
 python preprocess/melody_accuracy.py data
-python preprocess/cleaner.py data data_clean
+python preprocess/cleaner.py data
 ```
 
 ## Training environment
@@ -81,28 +81,9 @@ PY
 
 ## Launch training
 
-From the project root, run a one-epoch smoke test first:
 
 ```bash
-python train.py \
-    data \
-    --config config.yaml \
-    --composer composer1 \
-    --max_epochs 1 \
-    --num_workers 0 \
-    --output_dir checkpoints_smoke
-```
-
-For a larger dataset, use several data-loader workers and a longer run:
-
-```bash
-python train.py \
-    data \
-    --config config.yaml \
-    --composer composer1 \
-    --max_epochs 100 \
-    --num_workers 4 \
-    --output_dir checkpoints
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train.py data_clean
 ```
 
 Useful arguments are:
