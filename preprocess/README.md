@@ -4,7 +4,12 @@
 
 - The first to fetch youtube:
 
-```bash
+```
+
+`cleaner.py` removes dataset folders missing required preprocessing files and
+renumbers the remaining `data_*` folders contiguously.
+All preprocessing stages are resumable: completed outputs are detected and
+skipped, while incomplete stages are processed again.bash
 conda create -n ytdlp python=3.11 -y
 conda activate ytdlp
 python -m pip install -U "yt-dlp[default]"
@@ -95,8 +100,12 @@ python preprocess/bpm_quantize.py data
 python preprocess/split_spleeter.py data
 python preprocess/melody_accuracy.py data
 python preprocess/cleaner.py data
-
 ```
+
+Each preprocessing step skips an item when all of that step's output files
+already exist. Delete an output file to rerun that item; incomplete output sets
+are recomputed.
+
 `cleaner.py` evaluates overlapping beat-aligned windows by comparing
 the full-song and vocal signals with the MIDI chroma. A window is accepted when
 the full-song alignment **or** the vocal chord-support alignment passes its

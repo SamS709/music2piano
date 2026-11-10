@@ -145,9 +145,12 @@ class MidiAudioPair:
         Example:
             ``sample.delete_files_myself()``
         """
-        shutil.rmtree(os.path.join(self.audio_dir, self.yaml.piano.ytid))
-        os.remove(self.yaml_path)
-        os.remove(self.original_midi)
+        if os.path.isdir(self.song_dir):
+            shutil.rmtree(self.song_dir)
+        if os.path.exists(self.yaml_path):
+            os.remove(self.yaml_path)
+        if os.path.exists(self.original_midi):
+            os.remove(self.original_midi)
         if os.path.exists(self.original_wav):
             os.remove(self.original_wav)
 

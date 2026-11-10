@@ -31,6 +31,12 @@ def estimate(meta_file):
     if "vocals" in sample.invalids:
         print("no vocal:", meta_file)
         return
+    if (
+        hasattr(sample.yaml, "eval")
+        and hasattr(sample.yaml.eval, "melody_chroma_accuracy")
+        and hasattr(sample.yaml.eval, "melody_pitch_accuracy")
+    ):
+        return
 
     midi = pretty_midi.PrettyMIDI(sample.qmidi)
     vocals, sr = librosa.load(sample.vocals, sr=44100)

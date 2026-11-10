@@ -19,8 +19,7 @@ def split_spleeter(meta_files):
     sample_rate = 44100
     audio_loader = AudioAdapter.default()
 
-    # Using embedded configuration.
-    separator = Separator("spleeter:2stems")
+    separator = None
 
     for meta_file in tqdm(meta_files):
         sample = MidiAudioPair(meta_file)
@@ -32,6 +31,9 @@ def split_spleeter(meta_files):
             print(f"Skipping {meta_file}: aligned song is missing ({sample.song})")
             continue
 
+        if separator is None:
+            # Using embedded configuration.
+            separator = Separator("spleeter:2stems")
         waveform, _ = audio_loader.load(sample.song, sample_rate=sample_rate)
 
         # Perform the separation :

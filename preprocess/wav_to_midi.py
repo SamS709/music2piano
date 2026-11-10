@@ -6,14 +6,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data_roots import dataset_roots
 
 def main(data_dir: str = "data"):
-
-    transcriptor = PianoTranscription(device="cuda", checkpoint_path=None)
+    transcriptor = None
 
     for root in dataset_roots(data_dir):
         for wav in glob.glob(f"{root}/*.wav"):          # top-level wavs = piano covers
             midi = wav.replace(".wav", ".mid")
             if os.path.exists(midi):
                 continue
+            if transcriptor is None:
+                transcriptor = PianoTranscription(device="cuda", checkpoint_path=None)
             audio, _ = librosa.load(wav, sr=sample_rate, mono=True)
             transcriptor.transcribe(audio, midi)
         

@@ -324,6 +324,12 @@ if __name__ == "__main__":
         for meta_file in tqdm(meta_files):
             m = MidiAudioPair(meta_file, auto_remove_no_song=True)
             if m.error_code != MidiAudioPair.NO_SONG:
+                if (
+                    not args.dry_run
+                    and os.path.isfile(m.song)
+                    and os.path.isfile(m.midi)
+                ):
+                    continue
                 aux_txt = os.path.join(
                     m.audio_dir,
                     m.yaml.piano.ytid,

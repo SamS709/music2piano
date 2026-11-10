@@ -9,3 +9,4 @@ __pycache__
 /data_clean
 /data_full
 /output
+/tests

@@ -26,6 +26,18 @@ def estimate(meta_file, ignore_sustain_pedal):
         or sample.error_code == MidiAudioPair.NO_SONG
     ):
         return
+    if all(
+        os.path.isfile(path)
+        for path in (
+            sample.qmidi,
+            sample.qmix,
+            sample.notes,
+            sample.beattime,
+            sample.beatstep,
+            sample.beatinterval,
+        )
+    ):
+        return
     if not os.path.isfile(sample.song):
         print(f"Skipping {meta_file}: aligned song is missing ({sample.song})")
         return

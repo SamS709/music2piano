@@ -5,8 +5,8 @@ Resumable YouTube piano/song downloader.
 Usage:
     python download/download.py train_dataset.csv data \
         --cookies-from-browser chrome \
-        --num_audio 2000 \
-        --sleep-between-pairs 30
+        --num_audio 4000 \
+        --sleep-between-pairs 0
 
 Features:
     - Resumable downloads
@@ -47,11 +47,13 @@ YTDLP = [
     "-m",
     "yt_dlp",
     "--no-warnings",
+    "--js-runtimes",
+    "deno",
 ]
 
-SLEEP_REQUESTS = "3"
-SLEEP_MIN = "10"
-SLEEP_MAX = "20"
+DEFAULT_SLEEP_REQUESTS = 0
+DEFAULT_SLEEP_MIN = 0
+DEFAULT_SLEEP_MAX = 0
 
 
 # ---------------------------------------------------------------------
@@ -78,6 +80,11 @@ def _ytdlp_command(cookies_from_browser=None, cookies=None):
 
     if cookies:
         command += ["--cookies", cookies]
+
+    command += [
+        "--extractor-args",
+        "youtube:player_client=mweb",
+    ]
 
     return command
 
@@ -192,6 +199,71 @@ def _existing_dataset_root(piano_id, output_dir):
     return None
 
 
+def _existing_pair_root(piano_id, pop_id, output_dir):
+    """Return a dataset root only when this exact piano/song pair is complete."""
+    for candidate in dataset_roots(output_dir):
+        metadata_path = candidate / f"{piano_id}.yaml"
+        if not metadata_path.exists():
+            continue
+        try:
+            metadata = OmegaConf.load(metadata_path)
+        except Exception:
+            continue
+        if metadata.get("piano", {}).get("ytid") != piano_id:
+            continue
+        if metadata.get("song", {}).get("ytid") != pop_id:
+            continue
+        if not (candidate / f"{piano_id}.wav").exists():
+            continue
+        if not (candidate / piano_id / f"{pop_id}.wav").exists():
+            continue
+        return candidate
+    return None
+
+
+def _find_existing_video(video_id, output_dir, kind):
+    """Return an existing WAV and metadata for a piano or song video."""
+    for root in dataset_roots(output_dir):
+        candidates = (
+            [root / f"{video_id}.wav"]
+            if kind == "piano"
+            else root.rglob(f"{video_id}.wav")
+        )
+        for audio_path in candidates:
+            metadata_path = (
+                audio_path.parent / f"{video_id}.yaml"
+                if kind == "piano"
+                else audio_path.parent.parent / f"{audio_path.parent.name}.yaml"
+            )
+            if not metadata_path.exists():
+                continue
+            metadata = OmegaConf.load(metadata_path)
+            section = metadata.get(kind)
+            if section is not None and section.get("ytid") == video_id:
+                return audio_path, section
+    return None
+
+
+def _reuse_existing_video(video_id, output_dir, kind, metadata_path):
+    existing = _find_existing_video(video_id, output_dir, kind)
+    if existing is None:
+        return False
+
+    source_path, video_metadata = existing
+    metadata = OmegaConf.load(metadata_path)
+    destination_dir = metadata_path.parent
+    if kind == "piano":
+        shutil.copy2(source_path, destination_dir / f"{video_id}.wav")
+        metadata.piano = video_metadata
+    else:
+        piano_dir = destination_dir / str(metadata.piano.ytid)
+        piano_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, piano_dir / f"{video_id}.wav")
+        metadata.song = video_metadata
+    _save_metadata(metadata, metadata_path)
+    return True
+
+
 def _save_metadata(metadata, path):
     """Save metadata atomically to avoid corrupted YAML files."""
 
@@ -291,6 +363,9 @@ def download_piano(
     dry_run=False,
     cookies_from_browser=None,
     cookies=None,
+    sleep_requests=DEFAULT_SLEEP_REQUESTS,
+    sleep_min=DEFAULT_SLEEP_MIN,
+    sleep_max=DEFAULT_SLEEP_MAX,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -304,15 +379,16 @@ def download_piano(
 
         cmd = _ytdlp_command(cookies_from_browser, cookies) + [
             "-o", output,
+            "-f", "bestaudio[ext=m4a]/bestaudio/best",
             "--extract-audio",
             "--audio-quality", "0",
             "--audio-format", "wav",
             "--retries", "5",
             "--force-ipv4",
             "--yes-playlist",
-            "--sleep-requests", SLEEP_REQUESTS,
-            "--sleep-interval", SLEEP_MIN,
-            "--max-sleep-interval", SLEEP_MAX,
+            "--sleep-requests", str(sleep_requests),
+            "--sleep-interval", str(sleep_min),
+            "--max-sleep-interval", str(sleep_max),
         ]
 
         if postprocess:
@@ -379,6 +455,9 @@ def download_pop(
     dry_run=False,
     cookies_from_browser=None,
     cookies=None,
+    sleep_requests=DEFAULT_SLEEP_REQUESTS,
+    sleep_min=DEFAULT_SLEEP_MIN,
+    sleep_max=DEFAULT_SLEEP_MAX,
 ):
     output_dir = Path(output_dir)
 
@@ -393,16 +472,16 @@ def download_pop(
 
     cmd = _ytdlp_command(cookies_from_browser, cookies) + [
         "-o", output_template,
-        "-t", "sleep",
+        "-f", "bestaudio[ext=m4a]/bestaudio/best",
         "--extract-audio",
         "--audio-quality", "0",
         "--audio-format", "wav",
         "--retries", "5",
         "--match-filter", "duration < 300 & duration > 150",
         "--postprocessor-args", "ffmpeg:-ac 2 -ar 44100",
-        "--sleep-requests", SLEEP_REQUESTS,
-        "--sleep-interval", SLEEP_MIN,
-        "--max-sleep-interval", SLEEP_MAX,
+        "--sleep-requests", str(sleep_requests),
+        "--sleep-interval", str(sleep_min),
+        "--max-sleep-interval", str(sleep_max),
     ]
 
     if dry_run:
@@ -455,6 +534,9 @@ def download_pair(
     dry_run=False,
     cookies_from_browser=None,
     cookies=None,
+    sleep_requests=DEFAULT_SLEEP_REQUESTS,
+    sleep_min=DEFAULT_SLEEP_MIN,
+    sleep_max=DEFAULT_SLEEP_MAX,
 ):
     """
     Download one piano/song pair.
@@ -464,6 +546,10 @@ def download_pair(
     """
 
     output_dir = Path(output_dir)
+
+    existing_pair = _existing_pair_root(piano_id, pop_id, output_dir)
+    if existing_pair is not None:
+        return existing_pair
 
     dataset_dir = _existing_dataset_root(piano_id, output_dir)
 
@@ -488,14 +574,21 @@ def download_pair(
     if not piano_complete:
 
         try:
-            download_piano(
-                url=f"https://www.youtube.com/watch?v={piano_id}",
-                output_dir=str(dataset_dir),
-                postprocess=True,
-                dry_run=dry_run,
-                cookies_from_browser=cookies_from_browser,
-                cookies=cookies,
+            reused = _reuse_existing_video(
+                piano_id, output_dir, "piano", metadata_path
             )
+            if not reused:
+                download_piano(
+                    url=f"https://www.youtube.com/watch?v={piano_id}",
+                    output_dir=str(dataset_dir),
+                    postprocess=True,
+                    dry_run=dry_run,
+                    cookies_from_browser=cookies_from_browser,
+                    cookies=cookies,
+                    sleep_requests=sleep_requests,
+                    sleep_min=sleep_min,
+                    sleep_max=sleep_max,
+                )
 
         except UnavailableVideoError as exc:
             _record_unavailable(
@@ -532,7 +625,7 @@ def download_pair(
     song_id = metadata.song.get("ytid") if metadata.get("song") else None
 
     song_complete = (
-        song_id is not None
+        song_id == pop_id
         and (dataset_dir / piano_id / f"{song_id}.wav").exists()
     )
 
@@ -540,14 +633,21 @@ def download_pair(
         return dataset_dir
 
     try:
-        download_pop(
-            piano_id=piano_id,
-            pop_id=pop_id,
-            output_dir=str(dataset_dir),
-            dry_run=False,
-            cookies_from_browser=cookies_from_browser,
-            cookies=cookies,
+        reused = _reuse_existing_video(
+            pop_id, output_dir, "song", metadata_path
         )
+        if not reused:
+            download_pop(
+                piano_id=piano_id,
+                pop_id=pop_id,
+                output_dir=str(dataset_dir),
+                dry_run=False,
+                cookies_from_browser=cookies_from_browser,
+                cookies=cookies,
+                sleep_requests=sleep_requests,
+                sleep_min=sleep_min,
+                sleep_max=sleep_max,
+            )
 
     except UnavailableVideoError as exc:
         _record_unavailable(
@@ -591,6 +691,14 @@ def main():
         "--num_audio",
         type=int,
         default=None,
+        help="Maximum number of audios to download",
+    )
+
+    parser.add_argument(
+        "--start_audio",
+        type=int,
+        default=0,
+        help="Number of CSV rows to skip before downloading (default: 0)",
     )
 
     parser.add_argument(
@@ -601,7 +709,29 @@ def main():
     parser.add_argument(
         "--sleep-between-pairs",
         type=float,
-        default=30,
+        default=0,
+        help="Seconds to wait after each pair (default: 0)",
+    )
+
+    parser.add_argument(
+        "--sleep-requests",
+        type=float,
+        default=DEFAULT_SLEEP_REQUESTS,
+        help="Seconds to wait between HTTP requests (default: 0)",
+    )
+
+    parser.add_argument(
+        "--sleep-min",
+        type=float,
+        default=DEFAULT_SLEEP_MIN,
+        help="Minimum yt-dlp download sleep in seconds (default: 0)",
+    )
+
+    parser.add_argument(
+        "--sleep-max",
+        type=float,
+        default=DEFAULT_SLEEP_MAX,
+        help="Maximum yt-dlp download sleep in seconds (default: 0)",
     )
 
     parser.add_argument(
@@ -632,6 +762,21 @@ def main():
             "--cookies and --cookies-from-browser are mutually exclusive"
         )
 
+    if args.start_audio < 0:
+        parser.error("--start_audio must be >= 0")
+
+    if (
+        args.sleep_requests < 0
+        or args.sleep_min < 0
+        or args.sleep_max < args.sleep_min
+        or args.sleep_between_pairs < 0
+    ):
+        parser.error(
+            "--sleep-requests, --sleep-min, and "
+            "--sleep-between-pairs must be >= 0; "
+            "--sleep-max must be >= --sleep-min"
+        )
+
     df = pd.read_csv(args.dataset)
 
     required_columns = {"piano_ids", "pop_ids"}
@@ -640,6 +785,8 @@ def main():
         parser.error(
             f"CSV must contain columns: {required_columns}"
         )
+
+    df = df.iloc[args.start_audio:]
 
     if args.num_audio is not None:
         df = df.head(args.num_audio)
@@ -688,6 +835,9 @@ def main():
                     dry_run=args.dry_run,
                     cookies_from_browser=args.cookies_from_browser,
                     cookies=args.cookies,
+                    sleep_requests=args.sleep_requests,
+                    sleep_min=args.sleep_min,
+                    sleep_max=args.sleep_max,
                 )
 
                 if result is None:

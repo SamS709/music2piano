@@ -10,7 +10,15 @@ script is not included in this checkout.
 ---
 - List of data : ```train_dataset.csv```
 - Downloader : ```download/download.py```
-    - ```python download.py train_dataset.csv data/```
+    - ```python download/download.py train_dataset.csv data/ --num_audio 4000```
+    - Use `--start_audio 3000` to skip the first 3000 CSV rows. Combine it
+      with `--num_audio` to select a batch, for example
+      `--start_audio 3000 --num_audio 1000`.
+
+The downloader uses no intentional delay by default. If YouTube starts
+rate-limiting requests, add delays such as
+`--sleep-requests 3 --sleep-min 10 --sleep-max 20
+--sleep-between-pairs 30`.
 
 Each downloaded piano/song pair gets its own numbered dataset directory below
 `data/`, such as `data/data_0` and `data/data_1`. Training and preprocessing
@@ -83,7 +91,7 @@ PY
 
 
 ```bash
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train.py data_clean
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train.py data
 ```
 
 Useful arguments are:
@@ -156,4 +164,3 @@ find checkpoints_smoke -type f | sort
 One processed song is enough for a smoke test, but not for useful learning.
 Meaningful training requires many independent processed songs and a proper
 arranger/composer label for each example if style conditioning is required.
-

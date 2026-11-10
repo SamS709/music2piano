@@ -35,6 +35,7 @@ import argparse
 import copy
 import csv
 import json
+import shutil
 import sys
 import traceback
 from concurrent.futures import ProcessPoolExecutor
@@ -149,6 +150,41 @@ def song_paths(meta_file: Path) -> SimpleNamespace:
         scores_path=source_dir / f"{song_id}.scores.npz",
         manifest_path=source_dir / f"{song_id}.clean.json",
     )
+
+
+def remove_incomplete_roots(roots):
+    """Delete dataset roots missing files required by the cleaner."""
+    valid_roots = []
+    required = ("song_path", "midi_path", "notes_path", "beatstep_path")
+    for root in roots:
+        metadata_files = sorted(root.glob("*.yaml"))
+        if not metadata_files:
+            shutil.rmtree(root)
+            continue
+        complete = True
+        for metadata_file in metadata_files:
+            paths = song_paths(metadata_file)
+            if not all(getattr(paths, name).exists() for name in required):
+                complete = False
+                break
+        if complete:
+            valid_roots.append(root)
+        else:
+            print(f"remove incomplete dataset: {root}")
+            shutil.rmtree(root)
+    return valid_roots
+
+
+def compact_dataset_roots(data_dir):
+    """Rename numbered dataset roots contiguously, preserving their order."""
+    roots = dataset_roots(data_dir)
+    temporary = []
+    for index, root in enumerate(roots):
+        target = root.with_name(f".{root.name}.renumber-{index}")
+        root.rename(target)
+        temporary.append(target)
+    for index, root in enumerate(temporary):
+        root.rename(Path(data_dir) / f"{Path(data_dir).name}_{index}")
 
 
 # --------------------------------------------------------------------------- #
@@ -536,6 +572,13 @@ def extract_regions(score: np.ndarray, beatstep: np.ndarray, th: Thresholds):
 # --------------------------------------------------------------------------- #
 def _process_song(meta_file, th, window_seconds, stride, overwrite, regions_only):
     paths = song_paths(meta_file)
+    if (
+        not overwrite
+        and not regions_only
+        and paths.scores_path.exists()
+        and paths.manifest_path.exists()
+    ):
+        return None
     needed = (
         (paths.beatstep_path,)
         if regions_only
@@ -912,6 +955,9 @@ def main() -> None:
     roots = dataset_roots(args.data_dir)
     if not roots:
         parser.error(f"No numbered dataset roots found below {args.data_dir}")
+    roots = remove_incomplete_roots(roots)
+    if not roots:
+        parser.error(f"No complete dataset roots found below {args.data_dir}")
 
     th = thresholds_from_args(args)
     run_pipeline(roots, th, args)
@@ -920,6 +966,7 @@ def main() -> None:
             roots, args.random, args.random_from, args.random_seconds,
             args.random_dir, th, args.seed,
         )
+    compact_dataset_roots(args.data_dir)
 
 
 if __name__ == "__main__":
