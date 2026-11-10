@@ -51,6 +51,37 @@ python preprocess/melody_accuracy.py data
 python preprocess/cleaner.py data
 ```
 
+Spleeter uses TensorFlow and will use a CUDA GPU automatically when the
+TensorFlow CUDA dependencies are installed. Check the selected device before
+processing the full dataset:
+
+```bash
+python preprocess/split_spleeter.py data --device gpu
+```
+
+Use `--device cpu` to force CPU processing, or omit the option to allow
+automatic CPU fallback when TensorFlow cannot see a GPU.
+
+For a separate Spleeter environment, avoid installing the full legacy
+requirements file because it contains unrelated packages with incompatible
+historical NumPy constraints:
+
+```bash
+conda create -n music2piano-gpu python=3.10 -y
+conda activate music2piano-gpu
+python -m pip install -r requirements_spleeter_gpu.txt
+python preprocess/split_spleeter.py data --device gpu
+```
+
+The focused requirements file includes the CUDA 11.8/cuDNN 8.6 runtime wheels
+needed by TensorFlow 2.12.1. In WSL, set the native library path before
+starting Python (the dynamic loader reads it before TensorFlow is imported):
+
+```bash
+export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$(find "$CONDA_PREFIX/lib/python3.10/site-packages/nvidia" -type d -name lib -printf '%p:')${LD_LIBRARY_PATH}"
+python preprocess/split_spleeter.py data --device gpu
+```
+
 ## Training environment
 
 The original `requirements.txt` is intended for the legacy preprocessing

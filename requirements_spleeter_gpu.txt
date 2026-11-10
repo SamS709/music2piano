@@ -1,0 +1,15 @@
+# Minimal environment for preprocess/split_spleeter.py.
+# Python 3.10 is required by the TensorFlow 2.12/Spleeter combination.
+tensorflow==2.12.1
+omegaconf==2.1.1
+pretty-midi>=0.2.10
+spleeter==2.4.2
+tqdm>=4.66
+nvidia-cuda-runtime-cu11==11.8.89
+nvidia-cublas-cu11==11.11.3.6
+nvidia-cufft-cu11==10.9.0.58
+nvidia-curand-cu11==10.3.0.86
+nvidia-cusolver-cu11==11.4.1.48
+nvidia-cusparse-cu11==11.7.5.86
+nvidia-cudnn-cu11==8.6.0.163
+nvidia-nvtx-cu11==11.8.86

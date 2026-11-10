@@ -78,8 +78,14 @@ python bpm_quantize.py DATA_DIR
 
 4. get separated vocal track
 ```bash
-python split_spleeter.py DATA_DIR
+python split_spleeter.py DATA_DIR --device gpu
 ```
+
+Spleeter uses TensorFlow GPU support when its CUDA dependencies are installed.
+The `--device` option accepts `gpu`, `cpu`, or `auto` (the default).
+For a dedicated Python 3.10 environment, install
+`../requirements_spleeter_gpu.txt`; the full legacy requirements file contains
+unrelated packages with incompatible historical NumPy constraints.
 
 5. caculate melody chroma accuracy
 ```bash

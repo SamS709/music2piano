@@ -10,11 +10,30 @@ from midiaudiopair import MidiAudioPair
 from data_roots import metadata_files
 
 
-def split_spleeter(meta_files):
+def split_spleeter(meta_files, device="auto"):
+    if device == "cpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    elif device == "gpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
     # Use audio loader explicitly for loading audio waveform :
     from spleeter.audio.adapter import AudioAdapter
     from spleeter.separator import Separator
     import spleeter
+    import tensorflow as tf
+
+    gpu_devices = tf.config.list_physical_devices("GPU")
+    if device == "gpu" and not gpu_devices:
+        raise RuntimeError(
+            "GPU was requested, but TensorFlow cannot see a CUDA GPU. "
+            "Install the TensorFlow CUDA dependencies for the Spleeter environment."
+        )
+    if device == "cpu":
+        print("Spleeter device: CPU")
+    elif gpu_devices:
+        print(f"Spleeter device: GPU ({gpu_devices[0].name})")
+    else:
+        print("Spleeter device: CPU (no TensorFlow GPU is available)")
 
     sample_rate = 44100
     audio_loader = AudioAdapter.default()
@@ -66,6 +85,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Random order process (to run multiple process)",
     )
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "gpu"),
+        default="auto",
+        help="TensorFlow device: auto (default), cpu, or gpu",
+    )
 
     args = parser.parse_args()
 
@@ -75,4 +100,4 @@ if __name__ == "__main__":
 
     print("meta ", len(meta_files))
 
-    split_spleeter(meta_files)
+    split_spleeter(meta_files, device=args.device)
