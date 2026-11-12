@@ -203,7 +203,7 @@ Because a chunk only writes the notes that start in it, neighbouring chunks neve
    - GPU if available, `training.num_gpu` devices, DDP when more than one,
    - `accumulate_grad_batches`, `gradient_clip_val`, `check_val_every_n_epoch`, `log_every_n_steps` from the config,
    - optional mixed precision with `--precision` (for example `bf16-mixed`),
-   - `ModelCheckpoint` on `val_loss` (best 3 + last) and a learning-rate monitor,
+   - `ModelCheckpoint` on `val_loss` (best 3 + last), early stopping on `val_loss`, and a learning-rate monitor,
    - resume with `--resume path/to.ckpt`.
 
 The **effective batch size** is `training.batch_size × accumulate_grad_batches × num_gpu`.

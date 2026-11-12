@@ -42,7 +42,9 @@ tokenizer:
 training:
   resume: false
   num_gpu: 1
-  max_epochs: 20000
+  max_epochs: 10000
+  early_stopping_patience: 10
+  early_stopping_min_delta: 0.0
   accumulate_grad_batches: 2
   check_val_every_n_epoch: 1
   find_lr: false

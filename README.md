@@ -133,6 +133,8 @@ Useful arguments are:
 | `--config` | Model and training configuration; defaults to `config.yaml` |
 | `--composer` | Composer token from `config.yaml`, for example `composer1` |
 | `--max_epochs` | Number of training epochs |
+| `--early_stopping_patience` | Validation checks without `val_loss` improvement; `-1` disables early stopping |
+| `--early_stopping_min_delta` | Minimum `val_loss` improvement required to reset patience |
 | `--num_workers` | DataLoader worker processes; use `0` for debugging |
 | `--validation_fraction` | Fraction of metadata files used for validation |
 | `--output_dir` | Lightning logs and training output directory |

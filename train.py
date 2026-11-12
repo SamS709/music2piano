@@ -5,7 +5,7 @@ import argparse
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from torch.utils.data import DataLoader
 from transformers import get_cosine_schedule_with_warmup
 
@@ -129,6 +129,37 @@ def main(args):
     if use_gpu:
         torch.set_float32_matmul_precision("high")
 
+    early_stopping_patience = (
+        args.early_stopping_patience
+        if args.early_stopping_patience is not None
+        else config.training.get("early_stopping_patience", 10)
+    )
+    early_stopping_min_delta = (
+        args.early_stopping_min_delta
+        if args.early_stopping_min_delta is not None
+        else config.training.get("early_stopping_min_delta", 0.0)
+    )
+    callbacks = [
+        ModelCheckpoint(
+            monitor="val_loss",
+            mode="min",
+            save_top_k=3,
+            save_last=True,
+            filename="{epoch}-{val_loss:.4f}",
+        ),
+        LearningRateMonitor(logging_interval="step"),
+    ]
+    if early_stopping_patience >= 0:
+        callbacks.append(
+            EarlyStopping(
+                monitor="val_loss",
+                mode="min",
+                patience=early_stopping_patience,
+                min_delta=early_stopping_min_delta,
+                verbose=True,
+            )
+        )
+
     trainer_kwargs = dict(
         accelerator="gpu" if use_gpu else "cpu",
         devices=num_gpu,
@@ -138,16 +169,7 @@ def main(args):
         check_val_every_n_epoch=config.training.check_val_every_n_epoch,
         log_every_n_steps=config.training.get("log_every_n_steps", 50),
         default_root_dir=args.output_dir,
-        callbacks=[
-            ModelCheckpoint(
-                monitor="val_loss",
-                mode="min",
-                save_top_k=3,
-                save_last=True,
-                filename="{epoch}-{val_loss:.4f}",
-            ),
-            LearningRateMonitor(logging_interval="step"),
-        ],
+        callbacks=callbacks,
     )
     if args.precision is not None:
         trainer_kwargs["precision"] = args.precision
@@ -166,6 +188,18 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", default="checkpoints")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--max_epochs", type=int, default=None)
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=None,
+        help="validation checks without val_loss improvement; -1 disables early stopping",
+    )
+    parser.add_argument(
+        "--early_stopping_min_delta",
+        type=float,
+        default=None,
+        help="minimum val_loss improvement required to reset patience",
+    )
     parser.add_argument("--validation_fraction", type=float, default=0.1)
     parser.add_argument(
         "--train_stride_fraction",
