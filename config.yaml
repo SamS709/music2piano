@@ -28,6 +28,7 @@ composer_to_feature_token:
   composer21: 2072
 t5:
   feed_forward_proj: gated-gelu
+  dropout_rate: 0.2
   tie_word_embeddings: false
   tie_encoder_decoder: false
   vocab_size: 288
@@ -42,21 +43,21 @@ tokenizer:
 training:
   resume: false
   num_gpu: 1
-  max_epochs: 10000
-  early_stopping_patience: 10
-  early_stopping_min_delta: 0.0
+  max_epochs: 40
+  early_stopping_patience: 3
+  early_stopping_min_delta: 0.001
   accumulate_grad_batches: 2
   check_val_every_n_epoch: 1
   find_lr: false
-  optimizer: adafactor
-  lr: 0.0001
+  optimizer: adamw
+  lr: 0.00005
   lr_min: 1.0e-06
   batch_size: 16
-  gradient_clip_val: 3.0
-  warmup_steps: 500
+  gradient_clip_val: 1.0
+  warmup_steps: 1000
   weight_decay: 0.01
   scheduler: cosine # or none
-  log_every_n_steps: 10
+  log_every_n_steps: 100
 encoder:
   name: m-a-p/MERT-v1-95M
   revision: null

@@ -244,7 +244,7 @@ encoder:
   lr_mult: 0.1              # MERT LR multiplier when fine-tuning
 
 training:
-  warmup_steps: 500
+  warmup_steps: 1000
   weight_decay: 0.01        # AdamW only
   scheduler: cosine         # or "none"
   log_every_n_steps: 50

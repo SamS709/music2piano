@@ -56,6 +56,7 @@ These values override the corresponding Hugging Face T5 configuration.
 | Parameter | Value | Description |
 |---|---:|---|
 | `t5.feed_forward_proj` | `gated-gelu` | Feed-forward projection used by each T5 block. |
+| `t5.dropout_rate` | `0.2` | Dropout probability used by the T5 model during training. |
 | `t5.tie_word_embeddings` | `false` | Keeps the input and output token embeddings as separate parameters. |
 | `t5.tie_encoder_decoder` | `false` | Keeps encoder and decoder embeddings separate. |
 | `t5.vocab_size` | `288` | Total token vocabulary available to the model. It must be at least as large as the tokenizer vocabulary. |
@@ -82,18 +83,18 @@ tokenizer vocabulary and any special conditioning tokens.
 |---|---:|---|
 | `training.resume` | `false` | Legacy configuration flag for resuming. The current CLI uses `--resume` to select a checkpoint path. |
 | `training.num_gpu` | `1` | Number of GPUs used when CUDA is available. Multiple GPUs use distributed data parallel training. |
-| `training.max_epochs` | `10000` | Maximum number of training epochs. Early stopping can end training sooner. |
-| `training.early_stopping_patience` | `10` | Number of validation checks without improvement in `val_loss` before stopping. |
-| `training.early_stopping_min_delta` | `0.0` | Minimum decrease in `val_loss` required to count as an improvement. |
+| `training.max_epochs` | `40` | Maximum number of training epochs. Early stopping can end training sooner. |
+| `training.early_stopping_patience` | `3` | Number of validation checks without improvement in `val_loss` before stopping. |
+| `training.early_stopping_min_delta` | `0.001` | Minimum decrease in `val_loss` required to count as an improvement. |
 | `training.accumulate_grad_batches` | `2` | Number of batches whose gradients are accumulated before an optimizer update. |
 | `training.check_val_every_n_epoch` | `1` | Run validation after every epoch. This also determines how often early stopping is evaluated. |
 | `training.find_lr` | `false` | Legacy flag; the current `train.py` does not run an automatic learning-rate finder. |
 | `training.optimizer` | `adafactor` | Optimizer selection. `adafactor` uses Hugging Face Adafactor; any other value selects AdamW. |
-| `training.lr` | `0.0001` | Base learning rate for trainable non-encoder parameters. |
+| `training.lr` | `0.00005` | Base learning rate for trainable non-encoder parameters. |
 | `training.lr_min` | `0.000001` | Configured minimum learning rate. The current training scheduler does not directly use this value. |
 | `training.batch_size` | `16` | Number of examples per DataLoader batch on each GPU. |
 | `training.gradient_clip_val` | `3.0` | Maximum gradient norm used for gradient clipping. |
-| `training.warmup_steps` | `500` | Number of optimizer steps used for linear learning-rate warmup. |
+| `training.warmup_steps` | `1000` | Number of optimizer steps used for linear learning-rate warmup. |
 | `training.weight_decay` | `0.01` | AdamW weight decay. Adafactor does not use this value in the current implementation. |
 | `training.scheduler` | `cosine` | Learning-rate scheduler. `cosine` enables warmup followed by cosine decay; `none` keeps the learning rate constant. |
 | `training.log_every_n_steps` | `10` | Training-log interval in optimizer/training steps. |
