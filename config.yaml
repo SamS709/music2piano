@@ -1,7 +1,7 @@
 project: pop2piano
 dataset:
   target_length: 256
-  n_bars: 4
+  n_bars: 8
   sample_rate: 22050
   mel_is_conditioned: true
 composer_to_feature_token:
@@ -44,8 +44,8 @@ training:
   resume: false
   num_gpu: 1
   max_epochs: 40
-  early_stopping_patience: 3
-  early_stopping_min_delta: 0.001
+  early_stopping_patience: 5
+  early_stopping_min_delta: 0.000
   accumulate_grad_batches: 2
   check_val_every_n_epoch: 1
   find_lr: false
@@ -64,5 +64,5 @@ encoder:
   sample_rate: 24000
   freeze: true
   normalize_waveform: true
-  context_seconds: 2.0
+  context_seconds: 4.0
   lr_mult: 0.1 # only if weights unfreezed
