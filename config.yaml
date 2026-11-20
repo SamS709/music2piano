@@ -28,7 +28,7 @@ composer_to_feature_token:
   composer21: 2072
 t5:
   feed_forward_proj: gated-gelu
-  dropout_rate: 0.2
+  dropout_rate: 0.1
   tie_word_embeddings: false
   tie_encoder_decoder: false
   vocab_size: 288
@@ -42,19 +42,26 @@ tokenizer:
     velocity_bins: 0
 training:
   resume: false
+  seed: 3407
+  composer: composer1
+  output_dir: checkpoints
+  num_workers: 4
+  validation_fraction: 0.1
+  train_stride_fraction: 0.5
+  precision: bf16-mixed
   num_gpu: 1
-  max_epochs: 40
-  early_stopping_patience: 5
-  early_stopping_min_delta: 0.000
-  accumulate_grad_batches: 2
+  max_epochs: 30
+  early_stopping_patience: 7
+  early_stopping_min_delta: 0.0005
+  accumulate_grad_batches: 4
   check_val_every_n_epoch: 1
   find_lr: false
   optimizer: adamw
-  lr: 0.00005
+  lr: 0.00003
   lr_min: 1.0e-06
-  batch_size: 16
+  batch_size: 8
   gradient_clip_val: 1.0
-  warmup_steps: 1000
+  warmup_steps: 500
   weight_decay: 0.01
   scheduler: cosine # or none
   log_every_n_steps: 100

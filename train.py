@@ -86,20 +86,41 @@ class TrainableTransformer(TransformerWrapper):
 
 
 def main(args):
-    pl.seed_everything(args.seed, workers=True)
     config = OmegaConf.load(args.config)
-    composer_value = config.composer_to_feature_token[args.composer]
+    training = config.training
+
+    seed = args.seed if args.seed is not None else int(training.get("seed", 3407))
+    composer = args.composer or str(training.get("composer", "composer1"))
+    output_dir = args.output_dir or str(training.get("output_dir", "checkpoints"))
+    num_workers = (
+        args.num_workers
+        if args.num_workers is not None
+        else int(training.get("num_workers", 4))
+    )
+    validation_fraction = (
+        args.validation_fraction
+        if args.validation_fraction is not None
+        else float(training.get("validation_fraction", 0.1))
+    )
+    train_stride_fraction = (
+        args.train_stride_fraction
+        if args.train_stride_fraction is not None
+        else float(training.get("train_stride_fraction", 0.5))
+    )
+
+    pl.seed_everything(seed, workers=True)
+    composer_value = config.composer_to_feature_token[composer]
 
     files = metadata_files(args.data_dir)
     train_files, validation_files = split_by_song(
-        files, args.validation_fraction, args.seed
+        files, validation_fraction, seed
     )
 
     train_dataset = Pop2PianoDataset(
         train_files,
         config,
         composer_value=composer_value,
-        stride_fraction=args.train_stride_fraction,
+        stride_fraction=train_stride_fraction,
     )
     validation_dataset = Pop2PianoDataset(
         validation_files,
@@ -114,10 +135,10 @@ def main(args):
 
     loader_kwargs = dict(
         batch_size=config.training.batch_size,
-        num_workers=args.num_workers,
+        num_workers=num_workers,
         collate_fn=collate_batch,
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=args.num_workers > 0,
+        persistent_workers=num_workers > 0,
     )
     train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
     validation_loader = DataLoader(validation_dataset, shuffle=False, **loader_kwargs)
@@ -168,25 +189,37 @@ def main(args):
         gradient_clip_val=config.training.gradient_clip_val,
         check_val_every_n_epoch=config.training.check_val_every_n_epoch,
         log_every_n_steps=config.training.get("log_every_n_steps", 50),
-        default_root_dir=args.output_dir,
+        default_root_dir=output_dir,
         callbacks=callbacks,
     )
-    if args.precision is not None:
-        trainer_kwargs["precision"] = args.precision
+    configured_precision = training.get("precision")
+    precision = (
+        args.precision
+        if args.precision is not None
+        else (str(configured_precision) if configured_precision not in (None, False) else None)
+    )
+    if not use_gpu and precision in ("bf16-mixed", "bf16"):
+        precision = None
+    if precision is not None:
+        trainer_kwargs["precision"] = precision
     if use_gpu and num_gpu > 1:
         trainer_kwargs["strategy"] = "ddp"
 
     trainer = pl.Trainer(**trainer_kwargs)
-    trainer.fit(model, train_loader, validation_loader, ckpt_path=args.resume)
+    resume = args.resume
+    if resume is None:
+        resume_config = training.get("resume", False)
+        resume = str(resume_config) if isinstance(resume_config, str) else None
+    trainer.fit(model, train_loader, validation_loader, ckpt_path=resume)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Pop2Piano.")
     parser.add_argument("data_dir")
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--composer", default="composer1")
-    parser.add_argument("--output_dir", default="checkpoints")
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--composer", default=None)
+    parser.add_argument("--output_dir", default=None)
+    parser.add_argument("--num_workers", type=int, default=None)
     parser.add_argument("--max_epochs", type=int, default=None)
     parser.add_argument(
         "--early_stopping_patience",
@@ -200,18 +233,18 @@ if __name__ == "__main__":
         default=None,
         help="minimum val_loss improvement required to reset patience",
     )
-    parser.add_argument("--validation_fraction", type=float, default=0.1)
+    parser.add_argument("--validation_fraction", type=float, default=None)
     parser.add_argument(
         "--train_stride_fraction",
         type=float,
-        default=0.5,
+        default=None,
         help="segment stride for training as a fraction of the segment length",
     )
     parser.add_argument(
         "--precision",
         default=None,
-        help='e.g. "bf16-mixed" (Lightning 2.x); default: Lightning default',
+        help='override config.training.precision (e.g. "bf16-mixed")',
     )
     parser.add_argument("--resume", default=None, help="checkpoint to resume from")
-    parser.add_argument("--seed", type=int, default=3407)
+    parser.add_argument("--seed", type=int, default=None)
     main(parser.parse_args())
