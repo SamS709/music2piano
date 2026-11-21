@@ -28,7 +28,7 @@ composer_to_feature_token:
   composer21: 2072
 t5:
   feed_forward_proj: gated-gelu
-  dropout_rate: 0.1
+  dropout_rate: 0.2
   tie_word_embeddings: false
   tie_encoder_decoder: false
   vocab_size: 288
@@ -57,11 +57,11 @@ training:
   check_val_every_n_epoch: 1
   find_lr: false
   optimizer: adamw
-  lr: 0.00003
+  lr: 0.00005
   lr_min: 1.0e-06
   batch_size: 8
   gradient_clip_val: 1.0
-  warmup_steps: 500
+  warmup_steps: 1000
   weight_decay: 0.01
   scheduler: cosine # or none
   log_every_n_steps: 100
@@ -71,5 +71,5 @@ encoder:
   sample_rate: 24000
   freeze: true
   normalize_waveform: true
-  context_seconds: 4.0
+  context_seconds: 2.0
   lr_mult: 0.1 # only if weights unfreezed

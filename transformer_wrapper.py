@@ -466,6 +466,7 @@ class TransformerWrapper(pl.LightningModule):
         click_amp=0.2,
         add_click=False,
         max_batch_size=None,
+        max_length=None,
         beatsteps=None,
         mix_sample_rate=None,
         audio_y=None,
@@ -556,8 +557,12 @@ class TransformerWrapper(pl.LightningModule):
         relative_tokens, notes, pm = self.single_inference(
             audio=_audio,
             beatstep=beatsteps - beatsteps[0],
-            max_length=config.dataset.target_length
-            * max(1, (n_bars // config.dataset.n_bars)),
+            max_length=(
+                max_length
+                if max_length is not None
+                else config.dataset.target_length
+                * max(1, (n_bars // config.dataset.n_bars))
+            ),
             max_batch_size=max_batch_size,
             n_bars=n_bars,
             composer_value=composer_value,

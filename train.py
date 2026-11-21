@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from transformers import get_cosine_schedule_with_warmup
 
 from data_roots import metadata_files
@@ -133,15 +133,40 @@ def main(args):
         f"validation: {len(validation_files)} files / {len(validation_dataset)} segments"
     )
 
-    loader_kwargs = dict(
+    train_sampler = None
+    if args.data_weight:
+        train_sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(
+                train_dataset.sample_weights,
+                dtype=torch.double,
+            ),
+            num_samples=len(train_dataset),
+            replacement=True,
+            generator=torch.Generator().manual_seed(seed),
+        )
+        print(
+            "train: WeightedRandomSampler enabled "
+            f"({len(train_dataset)} samples)"
+        )
+
+    common_loader_kwargs = dict(
         batch_size=config.training.batch_size,
         num_workers=num_workers,
         collate_fn=collate_batch,
         pin_memory=torch.cuda.is_available(),
         persistent_workers=num_workers > 0,
     )
-    train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
-    validation_loader = DataLoader(validation_dataset, shuffle=False, **loader_kwargs)
+    train_loader_kwargs = dict(
+        **common_loader_kwargs,
+        sampler=train_sampler,
+        shuffle=train_sampler is None,
+    )
+    train_loader = DataLoader(train_dataset, **train_loader_kwargs)
+    validation_loader = DataLoader(
+        validation_dataset,
+        shuffle=False,
+        **common_loader_kwargs,
+    )
 
     model = TrainableTransformer(config)
 
@@ -244,6 +269,13 @@ if __name__ == "__main__":
         "--precision",
         default=None,
         help='override config.training.precision (e.g. "bf16-mixed")',
+    )
+    parser.add_argument(
+        "--data-weight",
+        "--sata-weight",
+        dest="data_weight",
+        action="store_true",
+        help="sample training segments proportionally to cleaner region scores",
     )
     parser.add_argument("--resume", default=None, help="checkpoint to resume from")
     parser.add_argument("--seed", type=int, default=None)
