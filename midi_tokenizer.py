@@ -131,6 +131,85 @@ class MidiTokenizer:
                 return [token_type, token - base]
         return [TOKEN_SPECIAL, -1]
 
+    def transpose_tokens(self, tokens, semitones):
+        """Transpose NOTE tokens without changing timing or duration tokens."""
+        transposed = np.asarray(tokens, dtype=np.int64).copy()
+        if semitones == 0:
+            return transposed
+
+        i = 0
+        out = []
+        while i < len(transposed):
+            token_type, value = self.detokenize(transposed[i])
+            if (
+                token_type == TOKEN_NOTE
+                and i + 1 < len(transposed)
+                and self.detokenize(transposed[i + 1])[0] == TOKEN_DURATION
+            ):
+                pitch = value + int(semitones)
+                if 0 <= pitch < self.n_note:
+                    out.append(self.tokenize_note(pitch, TOKEN_NOTE))
+                    out.append(int(transposed[i + 1]))
+                i += 2
+                continue
+            out.append(int(transposed[i]))
+            i += 1
+        return np.asarray(out, dtype=np.int64)
+
+    def sanitize_tokens(self, tokens, n_steps=None):
+        """Remove malformed tokens and return a canonical token sequence."""
+        result = []
+        onset = None
+        pending_pitch = None
+        last_onset = -1
+        n_steps = self.n_time if n_steps is None else int(n_steps)
+
+        for raw_token in np.asarray(tokens).reshape(-1).tolist():
+            token = int(raw_token)
+            token_type, value = self.detokenize(token)
+
+            if token_type == TOKEN_SPECIAL:
+                if value == EOS:
+                    break
+                continue
+
+            if token_type == TOKEN_TIME:
+                if 0 <= value < n_steps:
+                    if value < last_onset:
+                        pending_pitch = None
+                        continue
+                    if pending_pitch is not None:
+                        pending_pitch = None
+                    onset = value
+                    last_onset = value
+                    result.append(token)
+                continue
+
+            if token_type == TOKEN_VELOCITY:
+                if self.n_velocity and 0 <= value < self.n_velocity:
+                    if onset is not None:
+                        result.append(token)
+                continue
+
+            if token_type == TOKEN_NOTE:
+                if onset is not None and 0 <= value < self.n_note:
+                    pending_pitch = value
+                continue
+
+            if token_type == TOKEN_DURATION:
+                if onset is not None and pending_pitch is not None:
+                    if 0 <= value < self.n_duration:
+                        result.append(
+                            self.tokenize_note(pending_pitch, TOKEN_NOTE)
+                        )
+                        result.append(token)
+                    pending_pitch = None
+                continue
+
+        if EOS not in result:
+            result.append(EOS)
+        return np.asarray(result, dtype=np.int64)
+
     def to_string(self, tokens):
         """Readable ``(type, value)`` pairs, for debugging."""
         names = {

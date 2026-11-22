@@ -18,6 +18,9 @@ Differences from the original wrapper
   concatenated (no overlap or stitching). Onset positions are absolute inside
   the chunk, so inference must use the training ``n_bars``.
 * Decoding is configurable (sampling by default).
+* Training-time feature augmentation (time masking, feature dropout, small
+  noise) is applied after ``feat_norm`` and only to the frames of the chunk
+  itself (not to the discarded context frames).
 * Bug fixes: missing f-string, ``y`` undefined when ``beatsteps`` is given,
   dead ``feature_tokens`` path removed.
 """
@@ -35,11 +38,22 @@ import pytorch_lightning as pl
 import soundfile as sf
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModel, T5Config, T5ForConditionalGeneration
+from transformers.generation.logits_process import LogitsProcessor
 
 from midi_tokenizer import MidiTokenizer, extrapolate_beat_times
+from midi_tokenizer import (
+    EOS,
+    PAD,
+    TOKEN_DURATION,
+    TOKEN_NOTE,
+    TOKEN_SPECIAL,
+    TOKEN_TIME,
+    TOKEN_VELOCITY,
+)
 from utils.dsp import get_stereo
 
 
@@ -54,6 +68,11 @@ DEFAULT_ENCODER_CONFIG = {
     "normalize_waveform": True,
     "context_seconds": 2.0,  # audio taken on each side of a chunk
     "lr_mult": 0.1,  # LR multiplier for the encoder when freeze is False
+    # Training-time augmentation of the (layer-normed) encoder features.
+    "feature_time_mask_probability": 0.5,  # per sample, one masked span
+    "feature_time_mask_max_ratio": 0.10,  # span <= this fraction of the chunk frames
+    "feature_dropout_probability": 0.05,  # element-wise, rescaled by 1/(1-p)
+    "feature_noise_std": 0.01,  # std of gaussian noise (features are ~unit scale)
 }
 
 # Periods (in beat steps) of the sin/cos features describing a frame's position
@@ -106,6 +125,16 @@ class PretrainedAudioEncoder(nn.Module):
         self.sample_rate = int(cfg.sample_rate)
         self.freeze = bool(cfg.freeze)
         self.normalize = bool(cfg.normalize_waveform)
+        self.feature_time_mask_probability = float(
+            cfg.get("feature_time_mask_probability", 0.5)
+        )
+        self.feature_time_mask_max_ratio = float(
+            cfg.get("feature_time_mask_max_ratio", 0.10)
+        )
+        self.feature_dropout_probability = float(
+            cfg.get("feature_dropout_probability", 0.05)
+        )
+        self.feature_noise_std = float(cfg.get("feature_noise_std", 0.01))
 
         self.model = AutoModel.from_pretrained(
             cfg.name, trust_remote_code=True, revision=cfg.revision
@@ -115,10 +144,53 @@ class PretrainedAudioEncoder(nn.Module):
         # Learned softmax mixing weights over the embedding + transformer layers.
         self.layer_logits = nn.Parameter(torch.zeros(self.n_layers))
 
+        # Modules that are trainable after ``unfreeze_top_layers``; only these
+        # are put in train mode, everything else in MERT stays in eval mode
+        # (no dropout / spec-augment / layerdrop in the frozen part).
+        self._unfrozen_modules: list[nn.Module] = []
+
         if self.freeze:
             for p in self.model.parameters():
                 p.requires_grad_(False)
             self.model.eval()
+
+    def unfreeze_top_layers(self, n_layers: int = 2):
+        """Freeze the whole MERT model, then unfreeze its top N encoder blocks."""
+        n_layers = max(0, int(n_layers))
+        for parameter in self.model.parameters():
+            parameter.requires_grad_(False)
+
+        selected: list[nn.Module] = []
+        encoder_layers = getattr(getattr(self.model, "encoder", None), "layers", None)
+        if encoder_layers is not None and len(encoder_layers):
+            selected = list(encoder_layers)[-n_layers:] if n_layers else []
+        elif hasattr(self.model, "encoder") and hasattr(self.model.encoder, "block"):
+            blocks = self.model.encoder.block
+            selected = list(blocks)[-n_layers:] if n_layers else []
+        else:
+            raise RuntimeError(
+                "Cannot identify MERT transformer/encoder layers; refusing partial unfreeze"
+            )
+
+        for module in selected:
+            for parameter in module.parameters():
+                parameter.requires_grad_(True)
+
+        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        if not trainable:
+            raise RuntimeError("No MERT top encoder parameters were unfrozen")
+
+        self._unfrozen_modules = selected
+        self.freeze = False
+        self.set_encoder_mode(self.training)
+        return len(trainable)
+
+    def set_encoder_mode(self, training: bool):
+        """MERT is always in eval mode except for its unfrozen top blocks."""
+        self.model.eval()
+        if training and not self.freeze:
+            for module in self._unfrozen_modules:
+                module.train()
 
     def forward(self, wave: torch.Tensor, lengths: torch.Tensor):
         """
@@ -126,7 +198,8 @@ class PretrainedAudioEncoder(nn.Module):
         lengths : (B,) real number of samples of each waveform
 
         Returns (features (B, T, D), frame_times (T,) in seconds from the start
-        of each window, valid (B, T) bool).
+        of each window, valid (B, T) bool). No augmentation happens here; see
+        ``augment``.
         """
         if wave.shape[1] < self.MIN_SAMPLES:
             wave = torch.nn.functional.pad(wave, (0, self.MIN_SAMPLES - wave.shape[1]))
@@ -157,6 +230,140 @@ class PretrainedAudioEncoder(nn.Module):
         ) / self.sample_rate
         valid = frame_times[None] < (lengths.to(torch.float32) / self.sample_rate)[:, None]
         return features, frame_times, valid
+
+    def augment(self, features: torch.Tensor, region: torch.Tensor) -> torch.Tensor:
+        """Training-time augmentation of the (already layer-normed) features.
+
+        features : (B, T, D)
+        region   : (B, T) bool, the frames that will actually be used (the
+                   chunk itself, without the context). It is a contiguous
+                   block per row. Time-mask spans are placed inside it.
+        """
+        if not self.training:
+            return features
+
+        B, T, _ = features.shape
+        dtype, device = features.dtype, features.device
+
+        # --- time masking (random numbers on the CPU, one GPU sync in total) ---
+        n_region = region.sum(1)
+        first = region.long().argmax(1)  # first True of each row
+        info = torch.stack([n_region, first], dim=1).tolist()
+
+        time_keep = torch.ones(B, T, dtype=torch.bool)
+        for i, (n, start0) in enumerate(info):
+            if n <= 0 or random.random() >= self.feature_time_mask_probability:
+                continue
+            width = random.randint(1, max(1, int(n * self.feature_time_mask_max_ratio)))
+            start = random.randint(0, max(0, n - width))
+            time_keep[i, start0 + start : start0 + start + width] = False
+        features = features * time_keep.to(device)[:, :, None].to(dtype)
+
+        # --- element-wise dropout (rescaled by 1/(1-p)) ---
+        if self.feature_dropout_probability > 0:
+            features = F.dropout(
+                features, p=self.feature_dropout_probability, training=True
+            )
+
+        # --- small gaussian noise ---
+        if self.feature_noise_std > 0:
+            features = features + self.feature_noise_std * torch.randn_like(features)
+
+        return features
+
+
+class MidiGrammarLogitsProcessor(LogitsProcessor):
+    """Constrain generated tokens to the MidiTokenizer onset/note/duration grammar."""
+
+    def __init__(self, tokenizer: MidiTokenizer, n_steps: int):
+        self.tokenizer = tokenizer
+        self.n_steps = int(n_steps)
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor):
+        batch_size = input_ids.shape[0]
+        masked = torch.full_like(scores, -torch.inf)
+
+        for batch_index in range(batch_size):
+            allowed = self._allowed_for_sequence(input_ids[batch_index].tolist())
+            allowed = torch.as_tensor(allowed, dtype=torch.long, device=scores.device)
+            if allowed.numel():
+                masked[batch_index, allowed] = scores[batch_index, allowed]
+
+        return masked
+
+    def _allowed_for_sequence(self, sequence):
+        allowed_special = {EOS}
+        allowed = []
+        phase = "initial"
+        last_onset = -1
+        finished = False
+
+        for token in sequence:
+            token = int(token)
+            if token == PAD:
+                continue
+            if token == EOS:
+                finished = True
+                break
+
+            token_type, value = self.tokenizer.detokenize(token)
+            if token_type == TOKEN_SPECIAL:
+                continue
+            if token_type == TOKEN_TIME:
+                if (
+                    phase in ("initial", "duration")
+                    and value >= last_onset
+                    and value < self.n_steps
+                ):
+                    phase = "time"
+                    last_onset = value
+            elif token_type == TOKEN_VELOCITY:
+                if phase in ("time", "velocity", "duration"):
+                    phase = "velocity"
+            elif token_type == TOKEN_NOTE:
+                if phase in ("time", "velocity", "duration"):
+                    phase = "note"
+            elif token_type == TOKEN_DURATION:
+                if phase == "note":
+                    phase = "duration"
+
+        if finished:
+            return [EOS, PAD]
+
+        allowed = set()
+        if phase in ("initial", "duration"):
+            allowed_special = {EOS}
+
+            for time in range(last_onset + 1 if phase == "duration" else 0, self.n_steps):
+                allowed.add(self.tokenizer.tokenize_note(time, TOKEN_TIME))
+
+        if phase in ("time", "velocity", "duration"):
+            for pitch in range(self.tokenizer.n_note):
+                allowed.add(self.tokenizer.tokenize_note(pitch, TOKEN_NOTE))
+
+        if phase in ("time", "velocity", "duration"):
+            if self.tokenizer.n_velocity:
+                for velocity in range(self.tokenizer.n_velocity):
+                    allowed.add(
+                        self.tokenizer.tokenize_note(velocity, TOKEN_VELOCITY)
+                    )
+
+        if phase == "note":
+            for duration in range(self.tokenizer.n_duration):
+                allowed.add(
+                    self.tokenizer.tokenize_note(duration, TOKEN_DURATION)
+                )
+
+        allowed.update(allowed_special)
+        allowed_ids = sorted(
+            token for token in allowed if token < self.tokenizer.vocab_total
+        )
+
+        if allowed_ids:
+            return allowed_ids
+
+        # At an otherwise impossible position, only EOS is safe.
+        return [EOS]
 
 
 class TransformerWrapper(pl.LightningModule):
@@ -210,8 +417,9 @@ class TransformerWrapper(pl.LightningModule):
     # ------------------------------------------------------------------ #
     def train(self, mode: bool = True):
         super().train(mode)
-        if self.audio_encoder.freeze:
-            self.audio_encoder.model.eval()  # no dropout / spec-augment when frozen
+        # MERT stays in eval mode (no dropout / spec-augment) except for its
+        # unfrozen top blocks, if any.
+        self.audio_encoder.set_encoder_mode(mode)
         return self
 
     # ------------------------------------------------------------------ #
@@ -259,17 +467,26 @@ class TransformerWrapper(pl.LightningModule):
         composer      : (B,) composer token values (only if conditioned)
         """
         features, frame_times, valid = self.audio_encoder(audio, audio_lengths)
-        features = self.audio_proj(self.feat_norm(features))
+        features = self.feat_norm(features)
 
         offsets = offsets.to(frame_times.device, frame_times.dtype)
         durations = durations.to(frame_times.device, frame_times.dtype)
 
+        # Frames that belong to the chunk itself (the context frames are dropped).
+        keep = (
+            valid
+            & (frame_times[None] >= offsets[:, None])
+            & (frame_times[None] < (offsets + durations)[:, None])
+        )
+
+        # Augmentation only touches the frames that are actually used.
+        features = self.audio_encoder.augment(features, keep)
+        features = self.audio_proj(features)
+
         sequences = []
         for i in range(features.shape[0]):
-            lo = offsets[i]
-            keep = valid[i] & (frame_times >= lo) & (frame_times < lo + durations[i])
-            idx = keep.nonzero(as_tuple=True)[0]
-            tau = frame_times[idx] - lo
+            idx = keep[i].nonzero(as_tuple=True)[0]
+            tau = frame_times[idx] - offsets[i]
             beat = self.beat_proj(self.beat_features(tau, beat_grids[i]))
             sequences.append(self.input_norm(features[i, idx] + beat))
 
@@ -396,6 +613,10 @@ class TransformerWrapper(pl.LightningModule):
             for key in ("temperature", "top_k", "top_p"):
                 gen_kwargs.pop(key, None)
 
+        logits_processors = list(gen_kwargs.pop("logits_processor", []) or [])
+        logits_processors.append(MidiGrammarLogitsProcessor(self.tokenizer, n_steps))
+        gen_kwargs["logits_processor"] = logits_processors
+
         relative_tokens = []
         for b0 in range(0, len(starts), max_batch_size):
             sl = slice(b0, b0 + max_batch_size)
@@ -426,15 +647,30 @@ class TransformerWrapper(pl.LightningModule):
                 max_length=max_length,
                 **gen_kwargs,
             )
-            relative_tokens.append(out.cpu().numpy())
+            cleaned = [
+                self.tokenizer.sanitize_tokens(row, n_steps=n_steps)
+                for row in out.cpu().numpy()
+            ]
+            relative_tokens.append(cleaned)
 
-        width = max(rt.shape[-1] for rt in relative_tokens)
+        width = max(
+            sequence.shape[0]
+            for batch in relative_tokens
+            for sequence in batch
+        )
         relative_tokens = np.concatenate(
             [
-                np.pad(
-                    rt, [(0, 0), (0, width - rt.shape[-1])], constant_values=PAD
+                np.stack(
+                    [
+                        np.pad(
+                            sequence,
+                            (0, width - sequence.shape[0]),
+                            constant_values=PAD,
+                        )
+                        for sequence in batch
+                    ]
                 )
-                for rt in relative_tokens
+                for batch in relative_tokens
             ]
         )
 

@@ -45,6 +45,7 @@ class Pop2PianoDataset(Dataset):
         stride_fraction=1.0,
         min_segment_notes=1,
         min_region_score=0.0,
+        augment_pitch_shift=False,
     ):
         """
         stride_fraction  : segment stride as a fraction of the segment length.
@@ -52,6 +53,7 @@ class Pop2PianoDataset(Dataset):
                            varied beat phases; use it for training only).
         min_segment_notes: segments with fewer note onsets are skipped.
         min_region_score : skip regions whose mean cleaner score is lower.
+        augment_pitch_shift : randomly pitch-shift training audio and targets.
 
         ``sample_weights`` (one value per segment, the score of its region) can
         be given to a ``WeightedRandomSampler`` to favour well-aligned regions.
@@ -71,6 +73,12 @@ class Pop2PianoDataset(Dataset):
         )
         self.tokenizer = MidiTokenizer(config.tokenizer)
         self.composer_value = composer_value
+        augmentation = config.get("augmentation", {})
+        pitch_shift = augmentation.get("pitch_shift", {})
+        self.augment_pitch_shift = bool(augment_pitch_shift)
+        self.pitch_shift_probability = float(pitch_shift.get("probability", 0.5))
+        self.pitch_shift_min = int(pitch_shift.get("min_semitones", -3))
+        self.pitch_shift_max = int(pitch_shift.get("max_semitones", 3))
 
         self.songs = []  # dicts: song_path, beatstep
         self.samples = []  # (song index, start step)
@@ -159,6 +167,17 @@ class Pop2PianoDataset(Dataset):
             f"  target length: p50 {p50:.0f} / p90 {p90:.0f} / p99 {p99:.0f} / "
             f"max {max(token_lengths)}"
         )
+        if self.augment_pitch_shift:
+            pitch_shift_probability = self.pitch_shift_probability
+            augmented_count = len(self.samples) * pitch_shift_probability
+            print(
+                "  pitch-shift augmentation: "
+                f"{100.0 * pitch_shift_probability:.2f}% of samples are augmented "
+                f"(~{augmented_count:.0f} of {len(self.samples)} samples; "
+                f"+{100.0 * pitch_shift_probability:.2f}% effective data; "
+                f"{100.0 / (1.0 + pitch_shift_probability):.2f}% original / "
+                f"{100.0 * pitch_shift_probability / (1.0 + pitch_shift_probability):.2f}% augmented)"
+            )
 
     def __len__(self):
         return len(self.samples)
@@ -187,12 +206,35 @@ class Pop2PianoDataset(Dataset):
             audio = np.zeros(int(0.1 * self.sample_rate), dtype=np.float32)
 
         beat_grid = beatstep[start : end + 1] - start_time
+        labels = torch.tensor(self.targets[index], dtype=torch.long)
+        if (
+            self.augment_pitch_shift
+            and random.random() < self.pitch_shift_probability
+        ):
+            choices = [
+                semitones
+                for semitones in range(
+                    self.pitch_shift_min,
+                    self.pitch_shift_max + 1,
+                )
+                if semitones != 0
+            ]
+            if choices:
+                semitones = random.choice(choices)
+                audio = librosa.effects.pitch_shift(
+                    audio,
+                    sr=self.sample_rate,
+                    n_steps=semitones,
+                ).astype(np.float32)
+                labels = torch.from_numpy(
+                    self.tokenizer.transpose_tokens(labels.numpy(), semitones)
+                ).long()
         return {
             "audio": torch.from_numpy(audio.astype(np.float32)),
             "offset": float(start_time - win_start),
             "duration": float(end_time - start_time),
             "beat_grid": torch.from_numpy(beat_grid.astype(np.float32)),
-            "labels": torch.tensor(self.targets[index], dtype=torch.long),
+            "labels": labels,
             "composer": torch.tensor(self.composer_value, dtype=torch.long),
         }
 

@@ -120,80 +120,198 @@ PY
 
 ## Launch training
 
+The main entry point is `train.py`. The script builds a deterministic song-level
+validation split, creates MERT/T5 training and validation loaders, then starts
+PyTorch Lightning:
 
 ```bash
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train.py data
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train.py data \
+  --config config.yaml \
+  --data-weight
 ```
 
-Useful arguments are:
+`data` is the container directory containing the top-level metadata files and
+processed dataset directories. Training is logged with Lightning CSV logging
+and checkpoints are saved by `ModelCheckpoint`.
 
 | Argument | Meaning |
 | --- | --- |
-| `data` | Directory containing top-level `*.yaml` metadata files |
-| `--config` | Model and training configuration; defaults to `config.yaml` |
-| `--composer` | Composer token from `config.yaml`, for example `composer1` |
-| `--max_epochs` | Number of training epochs |
-| `--early_stopping_patience` | Validation checks without `val_loss` improvement; `-1` disables early stopping |
-| `--early_stopping_min_delta` | Minimum `val_loss` improvement required to reset patience |
-| `--num_workers` | DataLoader worker processes; use `0` for debugging |
-| `--validation_fraction` | Fraction of metadata files used for validation |
-| `--output_dir` | Lightning logs and training output directory |
-| `--seed` | Reproducibility seed |
+| `data_dir` | Dataset container directory |
+| `--config` | OmegaConf model configuration; default `config.yaml` |
+| `--composer` | Composer token used for training |
+| `--output_dir` | Training log/checkpoint root; default `training.output_dir` |
+| `--num_workers` | DataLoader worker count |
+| `--max_epochs` | Override `training.max_epochs` |
+| `--seed` | Override `training.seed` |
+| `--validation_fraction` | Fraction of independent songs held out for validation |
+| `--train_stride_fraction` | Training segment stride fraction; default `0.5` |
+| `--precision` | Override Lightning precision |
+| `--data-weight` | Weight training chunks by cleaner region score |
+| `--resume` | Continue a Lightning checkpoint with optimizer and epoch state |
+| `--early_stopping_patience` | Val-loss checks without improvement before stopping; `-1` disables it |
+| `--early_stopping_min_delta` | Minimum val-loss improvement required |
 
-The current script does not include the original dataset split, augmentation,
-or arranger-label metadata. It uses one selected composer token for all
-examples. The downloaded metadata does not identify the original arranger, so
-this is suitable for validating and training the reconstructed loop, but it is
-not an exact reproduction of the original 21-arranger experiment.
+### Training behavior
 
-## How the training loop works
+`Pop2PianoDataset` creates `n_bars * 4` eighth-note-step segments. It reads the
+preprocessed aligned audio, beat grid and quantized notes, and converts each
+segment to onset/pitch/duration T5 tokens. Training segments use a configurable
+overlap; validation uses disjoint segments.
 
-`train.py` builds examples from the preprocessed files:
+Files are split by song identity, not by individual chunk. Covers that share the
+same source song are kept together, preventing chunk overlap from leaking
+information into validation.
 
-1. `Pop2PianoDataset` reads each top-level metadata file and keeps samples
-   containing `*.pitchshift.wav`, `*.beatstep.npy`, and `*.notes.npy`.
-2. Each song is divided into `n_bars * 4` eighth-note steps. With the default
-   configuration (`n_bars: 2`), one example contains two bars.
-3. The matching audio interval is loaded at 22,050 Hz and converted by the
-   existing `LogMelSpectrogram` module (`n_fft=4096`, `hop_length=1024`,
-   `n_mels=512`).
-4. Quantized notes overlapping the interval are clipped to the segment and
-   converted to relative MIDI tokens with `MidiTokenizer`. An EOS token is
-   appended.
-5. `collate_batch` pads audio with zeros and target tokens with `-100`.
-   Hugging Face T5 ignores `-100` positions when calculating cross-entropy.
-6. `TrainableTransformer` optionally prepends the selected composer embedding
-   using `ConcatEmbeddingToMel`, then passes the mel features and labels to
-   `T5ForConditionalGeneration`.
-7. PyTorch Lightning calls `training_step`, logs `train_loss`, and updates the
-   model with Adafactor (the optimizer selected by `config.yaml`).
-8. `validation_step` calculates and logs `val_loss`. The metadata files are
-   shuffled deterministically and split according to `--validation_fraction`.
+The default config uses MERT at 24 kHz as the audio encoder and T5-small for
+sequence decoding. MERT hidden states are mixed through learned
+`audio_encoder.layer_logits` weights and projected to T5. Beat-position features
+and composer conditioning are included in the encoder inputs.
 
-The model learns to predict MIDI tokens from audio during training. At
-inference, the existing generation code in
-`evaluate/inference_testset.py` autoregressively decodes those tokens and
-writes standard MIDI files.
+Training augmentations are enabled only for the training dataset:
 
-## Training output and limitations
+- 50% of segments are randomly pitch-shifted from -3 to -1 or 1 to 3 semitones.
+  Audio and target pitch tokens are shifted together.
+- MERT feature augmentation applies time masking, 5% feature dropout and small
+  Gaussian noise only in training mode.
 
-The smoke test should complete with output similar to:
+These values are configurable under `augmentation.pitch_shift` and
+`encoder.feature_*` in `config.yaml`.
 
-```text
-GPU available: True (cuda), used: True
-Epoch 0: ... train_loss=...
-`Trainer.fit` stopped: `max_epochs=1` reached.
-```
+AdamW separates 2-D parameters and 1-D parameters and uses no weight decay for
+the latter. Trainable MERT parameters receive
+`main_learning_rate * encoder.lr_mult`; the default multiplier is `0.1`.
 
-Lightning logs are written below the selected `--output_dir`. The current
-reconstructed script does not explicitly configure a `ModelCheckpoint`
-callback, so inspect the output directory after training rather than assuming
-that a `.ckpt` file was saved:
+## Resume training
+
+Use `--resume` to continue full Lightning state, including the optimizer,
+scheduler and epoch:
 
 ```bash
-find checkpoints_smoke -type f | sort
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train.py data \
+  --resume checkpoints/lightning_logs/version_11/checkpoints/epoch=22-val_loss=1.2075.ckpt \
+  --output_dir checkpoints
 ```
 
-One processed song is enough for a smoke test, but not for useful learning.
-Meaningful training requires many independent processed songs and a proper
-arranger/composer label for each example if style conditioning is required.
+Do not combine `--resume` with `--finetune`.
+
+## Fine-tune a trained checkpoint
+
+Fine-tuning loads weights and starts a **new** Lightning trainer state.
+By default, MERT remains frozen and only T5/projection parameters are trained:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train.py data \
+  --finetune checkpoints/lightning_logs/version_11/checkpoints/epoch=22-val_loss=1.2075.ckpt \
+  --finetune-lr 0.000005 \
+  --output_dir checkpoints_finetune \
+  --max_epochs 10
+```
+
+Fine-tuning options:
+
+| Argument | Meaning |
+| --- | --- |
+| `--finetune` | Source checkpoint for weight initialization |
+| `--finetune-lr` | Main/T5 learning rate; default `training.finetune_lr` |
+| `--freeze-encoder` | Keep all MERT parameters frozen |
+| `--unfreeze-encoder` / `--train-encoder` | Train only the top MERT blocks |
+| `--encoder-top-layers` | Number of top MERT blocks; default `2` |
+
+To train MERT's top two encoder blocks with `lr_mult: 0.1`:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train.py data \
+  --finetune checkpoints/lightning_logs/version_11/checkpoints/epoch=22-val_loss=1.2075.ckpt \
+  --unfreeze-encoder \
+  --encoder-top-layers 2 \
+  --finetune-lr 0.000005 \
+  --output_dir checkpoints_finetune_encoder \
+  --max_epochs 10
+```
+
+The resulting parameter-group learning rates are:
+
+- Main/T5/projection parameters: `5e-6`
+- Trainable top MERT blocks: `5e-6 * 0.1 = 5e-7`
+
+### Fine-tune output location
+
+For a source checkpoint under a Lightning `version_N` directory, metrics and
+checkpoints are registered together beneath the source checkpoint name:
+
+```text
+checkpoints/lightning_logs/version_11/
+  checkpoints/
+    epoch=22-val_loss=1.2075.ckpt
+  epoch=22-val_loss=1.2075/
+    finetuned/
+      metrics.csv
+      epoch=0-val_loss=1.0000.ckpt
+      last.ckpt
+```
+
+The CSV logger uses `name=<checkpoint stem>` and `version=finetuned`, so the
+logger path is the same `.../finetuned/` directory used by `ModelCheckpoint`.
+For a source checkpoint outside a `version_N` directory, the fallback is:
+
+```text
+<output_dir>/lightning_logs/<checkpoint_stem>/finetuned/
+```
+
+## Decode generated MIDI
+
+Generation uses `MidiGrammarLogitsProcessor` to mask invalid T5 tokens:
+
+- Onsets are non-decreasing.
+- Every pitch is immediately followed by a duration.
+- Onset, pitch, duration, velocity and special-token values stay in range.
+
+Generated sequences are sanitized before decoding so orphan pitches and
+malformed tokens cannot create MIDI notes.
+
+## Compare beat grids
+
+Run generation against the stored/preprocessed beat grid and an Essentia grid,
+then report `mir_eval` onset F1 and note F1:
+
+```bash
+python evaluate/beat_note_f1.py data \
+  --ckpt checkpoints/lightning_logs/version_11/checkpoints/epoch=22-val_loss=1.2075.ckpt \
+  --config config.yaml \
+  --composer composer1 \
+  --model-id beat_eval \
+  --output beat_note_f1.csv
+```
+
+## Training output and validation
+
+Standard Lightning runs log below `--output_dir`:
+
+```text
+checkpoints/lightning_logs/
+  version_0/
+    metrics.csv
+    checkpoints/
+      epoch=*-val_loss=*.ckpt
+      last.ckpt
+```
+
+At startup, the dataset prints kept/discarded segment counts, target-length
+quantiles and pitch-shift augmentation accounting. The expected percentages
+are printed as:
+
+```text
+pitch-shift augmentation: 50.00% of samples are augmented
+(~N of M samples; +50.00% effective data; 66.67% original / 33.33% augmented)
+```
+
+Summarize all standard and fine-tune runs with:
+
+```bash
+python log_report.py --logs checkpoints/lightning_logs --output training_report.csv
+```
+
+The fine-tune CSV and nested checkpoint runs are discovered recursively.
+Validation is song-level, so overlapping training chunks do not leak into
+validation. A single processed song can smoke-test the pipeline, but meaningful
+training requires multiple independent processed songs.

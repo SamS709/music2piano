@@ -30,7 +30,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from data_roots import metadata_files
 from dataset import Pop2PianoDataset, collate_batch
 from midi_tokenizer import EOS
-from transformer_wrapper import TransformerWrapper
+from transformer_wrapper import MidiGrammarLogitsProcessor, TransformerWrapper
 
 
 # --------------------------------------------------------------------------- #
@@ -151,8 +151,17 @@ def generate_segments(model, batches, max_length, args, device):
                 max_length=max_length,
                 do_sample=False,
                 num_beams=1,
+                logits_processor=[
+                    MidiGrammarLogitsProcessor(model.tokenizer, model.config.dataset.n_bars * 4)
+                ],
             )
-        generated.extend(trim_after_eos(row) for row in out.cpu().numpy())
+        generated.extend(
+            model.tokenizer.sanitize_tokens(
+                row,
+                n_steps=model.config.dataset.n_bars * 4,
+            )
+            for row in out.cpu().numpy()
+        )
     return generated
 
 

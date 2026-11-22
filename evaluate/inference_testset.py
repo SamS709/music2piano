@@ -25,8 +25,7 @@ def inference_main(meta_files, ckpt, config, id, **kwargs):
     warnings.filterwarnings(action="ignore")
 
     config = OmegaConf.load(config)
-    wrapper = TransformerWrapper(config)
-    wrapper = wrapper.load_from_checkpoint(ckpt, config=config).cuda()
+    wrapper = TransformerWrapper.load_from_checkpoint(ckpt, config=config).cuda()
     wrapper.eval()
 
     with torch.no_grad():
